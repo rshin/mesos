@@ -61,6 +61,7 @@ public:
       const Flags& flags,
       const process::PID<Master>& master,
       const hashmap<std::string, RoleInfo>& roles) = 0;
+  using process::ProcessBase::initialize;    
 
   virtual void frameworkAdded(
       const FrameworkID& frameworkId,

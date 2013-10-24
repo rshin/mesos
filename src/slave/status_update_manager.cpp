@@ -64,6 +64,7 @@ public:
   void initialize(
       const Flags& flags,
       const PID<Slave>& slave);
+  using process::ProcessBase::initialize;    
 
   Future<Nothing> update(
       const StatusUpdate& update,

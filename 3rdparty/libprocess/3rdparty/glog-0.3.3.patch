@@ -1,0 +1,928 @@
+diff -rupN glog-0.3.3/Makefile.am glog-latest/Makefile.am
+--- glog-0.3.3/Makefile.am	2013-01-31 22:31:37.000000000 -0800
++++ glog-latest/Makefile.am	2013-10-23 12:49:22.000000000 -0700
+@@ -51,7 +51,8 @@ lib_LTLIBRARIES =
+ # The libraries libglog depends on.
+ COMMON_LIBS = $(PTHREAD_LIBS) $(GFLAGS_LIBS) $(UNWIND_LIBS)
+ # Compile switches for our unittest.
+-TEST_CFLAGS = $(GTEST_CFLAGS) $(GMOCK_CFLAGS) $(GFLAGS_CFLAGS) $(AM_CXXFLAGS)
++TEST_CFLAGS = $(GTEST_CFLAGS) $(GMOCK_CFLAGS) $(GFLAGS_CFLAGS) \
++              $(MINGW_CFLAGS) $(AM_CXXFLAGS)
+ # Libraries for our unittest.
+ TEST_LIBS = $(GTEST_LIBS) $(GMOCK_LIBS) $(GFLAGS_LIBS)
+ 
+@@ -195,7 +196,8 @@ libglog_la_SOURCES = $(gloginclude_HEADE
+                        src/base/commandlineflags.h src/googletest.h
+ nodist_libglog_la_SOURCES = $(nodist_gloginclude_HEADERS)
+ 
+-libglog_la_CXXFLAGS = $(PTRHEAD_CFLAGS) $(GFLAGS_CFLAGS) $(AM_CXXFLAGS) -DNDEBUG
++libglog_la_CXXFLAGS = $(PTRHEAD_CFLAGS) $(GFLAGS_CFLAGS) $(MINGW_CFLAGS) \
++                      $(AM_CXXFLAGS) -DNDEBUG
+ libglog_la_LDFLAGS = $(PTRHEAD_CFLAGS) $(GFLAGS_LDFLAGS)
+ libglog_la_LIBADD = $(COMMON_LIBS)
+ 
+diff -rupN glog-0.3.3/Makefile.in glog-latest/Makefile.in
+--- glog-0.3.3/Makefile.in	2013-01-31 22:31:37.000000000 -0800
++++ glog-latest/Makefile.in	2013-10-23 12:49:20.000000000 -0700
+@@ -382,6 +382,7 @@ LN_S = @LN_S@
+ LTLIBOBJS = @LTLIBOBJS@
+ MAKEINFO = @MAKEINFO@
+ MANIFEST_TOOL = @MANIFEST_TOOL@
++MINGW_CFLAGS = @MINGW_CFLAGS@
+ MKDIR_P = @MKDIR_P@
+ NM = @NM@
+ NMEDIT = @NMEDIT@
+@@ -499,7 +500,9 @@ lib_LTLIBRARIES = libglog.la
+ # The libraries libglog depends on.
+ COMMON_LIBS = $(PTHREAD_LIBS) $(GFLAGS_LIBS) $(UNWIND_LIBS)
+ # Compile switches for our unittest.
+-TEST_CFLAGS = $(GTEST_CFLAGS) $(GMOCK_CFLAGS) $(GFLAGS_CFLAGS) $(AM_CXXFLAGS)
++TEST_CFLAGS = $(GTEST_CFLAGS) $(GMOCK_CFLAGS) $(GFLAGS_CFLAGS) \
++              $(MINGW_CFLAGS) $(AM_CXXFLAGS)
++
+ # Libraries for our unittest.
+ TEST_LIBS = $(GTEST_LIBS) $(GMOCK_LIBS) $(GFLAGS_LIBS)
+ TESTS_ENVIRONMENT = 
+@@ -606,7 +609,9 @@ libglog_la_SOURCES = $(gloginclude_HEADE
+                        src/base/commandlineflags.h src/googletest.h
+ 
+ nodist_libglog_la_SOURCES = $(nodist_gloginclude_HEADERS)
+-libglog_la_CXXFLAGS = $(PTRHEAD_CFLAGS) $(GFLAGS_CFLAGS) $(AM_CXXFLAGS) -DNDEBUG
++libglog_la_CXXFLAGS = $(PTRHEAD_CFLAGS) $(GFLAGS_CFLAGS) $(MINGW_CFLAGS) \
++                      $(AM_CXXFLAGS) -DNDEBUG
++
+ libglog_la_LDFLAGS = $(PTRHEAD_CFLAGS) $(GFLAGS_LDFLAGS)
+ libglog_la_LIBADD = $(COMMON_LIBS)
+ WINDOWS_PROJECTS = google-glog.sln vsprojects/libglog/libglog.vcproj \
+diff -rupN glog-0.3.3/configure glog-latest/configure
+--- glog-0.3.3/configure	2013-01-31 22:21:20.000000000 -0800
++++ glog-latest/configure	2013-10-23 12:49:20.000000000 -0700
+@@ -619,6 +619,7 @@ LIBOBJS
+ GMOCK_LIBS
+ GTEST_LIBS
+ GFLAGS_LIBS
++MINGW_CFLAGS
+ GMOCK_CFLAGS
+ GTEST_CFLAGS
+ GFLAGS_CFLAGS
+@@ -15706,6 +15707,18 @@ fi
+ done
+ 
+ 
++ac_fn_cxx_check_header_mongrel "$LINENO" "windows.h" "ac_cv_header_windows_h" "$ac_includes_default"
++if test "x$ac_cv_header_windows_h" = xyes; then :
++  ac_cv_have_windows_h=1
++else
++  ac_cv_have_windows_h=0
++fi
++
++
++if test x"$ac_cv_have_windows_h" = x"1"; then
++  MINGW_CFLAGS=-Isrc/windows
++fi
++
+ # The cast to long int works around a bug in the HP C Compiler
+ # version HP92453-01 B.11.11.23709.GP, which incorrectly rejects
+ # declarations like `int a3[[(sizeof (unsigned char)) >= 0]];'.
+@@ -15771,6 +15784,13 @@ $as_echo "#define HAVE_SIGALTSTACK 1" >>
+ 
+ fi
+ 
++ac_fn_cxx_check_func "$LINENO" "sigaction" "ac_cv_func_sigaction"
++if test "x$ac_cv_func_sigaction" = xyes; then :
++
++$as_echo "#define HAVE_SIGACTION 1" >>confdefs.h
++
++fi
++
+ ac_fn_cxx_check_func "$LINENO" "dladdr" "ac_cv_func_dladdr"
+ if test "x$ac_cv_func_dladdr" = xyes; then :
+ 
+@@ -15785,6 +15805,20 @@ $as_echo "#define HAVE_FCNTL 1" >>confde
+ 
+ fi
+ 
++ac_fn_cxx_check_func "$LINENO" "pread" "ac_cv_func_pread"
++if test "x$ac_cv_func_pread" = xyes; then :
++
++$as_echo "#define HAVE_PREAD 1" >>confdefs.h
++
++fi
++
++ac_fn_cxx_check_func "$LINENO" "pwrite" "ac_cv_func_pwrite"
++if test "x$ac_cv_func_pwrite" = xyes; then :
++
++$as_echo "#define HAVE_PWRITE 1" >>confdefs.h
++
++fi
++
+ 
+ 
+   { $as_echo "$as_me:${as_lineno-$LINENO}: checking for __attribute__" >&5
+@@ -16650,7 +16684,41 @@ $as_echo "no" >&6; }
+ fi
+ 
+ 
+-if test x"$GTEST_CONFIG" = "xyes"; then
++{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for main in -lgtest" >&5
++$as_echo_n "checking for main in -lgtest... " >&6; }
++if ${ac_cv_lib_gtest_main+:} false; then :
++  $as_echo_n "(cached) " >&6
++else
++  ac_check_lib_save_LIBS=$LIBS
++LIBS="-lgtest  $LIBS"
++cat confdefs.h - <<_ACEOF >conftest.$ac_ext
++/* end confdefs.h.  */
++
++
++int
++main ()
++{
++return main ();
++  ;
++  return 0;
++}
++_ACEOF
++if ac_fn_cxx_try_link "$LINENO"; then :
++  ac_cv_lib_gtest_main=yes
++else
++  ac_cv_lib_gtest_main=no
++fi
++rm -f core conftest.err conftest.$ac_objext \
++    conftest$ac_exeext conftest.$ac_ext
++LIBS=$ac_check_lib_save_LIBS
++fi
++{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_gtest_main" >&5
++$as_echo "$ac_cv_lib_gtest_main" >&6; }
++if test "x$ac_cv_lib_gtest_main" = xyes; then :
++  have_gtest_lib="yes"
++fi
++
++if test x"$GTEST_CONFIG" = "xyes" -a x"$have_gtest_lib" = "xyes"; then
+   GTEST_CFLAGS=`gtest-config --cppflags --cxxflags`
+   GTEST_LIBS=`gtest-config --ldflags --libs`
+ 
+@@ -17180,6 +17248,7 @@ _ACEOF
+ 
+ 
+ 
++
+ # Write generated configuration file
+ ac_config_files="$ac_config_files Makefile src/glog/logging.h src/glog/raw_logging.h src/glog/vlog_is_on.h src/glog/stl_logging.h"
+ 
+diff -rupN glog-0.3.3/configure.ac glog-latest/configure.ac
+--- glog-0.3.3/configure.ac	2013-01-31 22:20:33.000000000 -0800
++++ glog-latest/configure.ac	2013-10-23 12:49:22.000000000 -0700
+@@ -47,6 +47,11 @@ AC_CHECK_HEADERS(glob.h)
+ # For backtrace with gcc.
+ AC_CHECK_HEADERS(unwind.h)
+ 
++AC_CHECK_HEADER(windows.h, ac_cv_have_windows_h=1, ac_cv_have_windows_h=0)
++if test x"$ac_cv_have_windows_h" = x"1"; then
++  MINGW_CFLAGS=-Isrc/windows
++fi
++
+ AC_CHECK_SIZEOF(void *)
+ 
+ # These are the types I need.  We look for them in either stdint.h,
+@@ -58,12 +63,21 @@ AC_CHECK_TYPE(__uint16, ac_cv_have___uin
+ AC_CHECK_FUNC(sigaltstack,
+               AC_DEFINE(HAVE_SIGALTSTACK, 1,
+                         [Define if you have the `sigaltstack' function]))
++AC_CHECK_FUNC(sigaction,
++              AC_DEFINE(HAVE_SIGACTION, 1,
++                        [Define if you have the 'sigaction' function]))
+ AC_CHECK_FUNC(dladdr,
+               AC_DEFINE(HAVE_DLADDR, 1,
+                         [Define if you have the `dladdr' function]))
+ AC_CHECK_FUNC(fcntl,
+               AC_DEFINE(HAVE_FCNTL, 1,
+                         [Define if you have the `fcntl' function]))
++AC_CHECK_FUNC(pread,
++              AC_DEFINE(HAVE_PREAD, 1,
++                        [Define if you have the 'pread' function]))
++AC_CHECK_FUNC(pwrite,
++              AC_DEFINE(HAVE_PWRITE, 1,
++                        [Define if you have the 'pwrite' function]))
+ 
+ AX_C___ATTRIBUTE__
+ # We only care about these two attributes.
+@@ -139,7 +153,8 @@ LIBS="$SAVE_LIBS"
+ #               once the m4 macro of Google Mocking becomes ready.
+ # Check if there is Google Test library installed.
+ AC_CHECK_PROG(GTEST_CONFIG, gtest-config, "yes")
+-if test x"$GTEST_CONFIG" = "xyes"; then
++AC_CHECK_LIB(gtest, main, have_gtest_lib="yes")
++if test x"$GTEST_CONFIG" = "xyes" -a x"$have_gtest_lib" = "xyes"; then
+   GTEST_CFLAGS=`gtest-config --cppflags --cxxflags`
+   GTEST_LIBS=`gtest-config --ldflags --libs`
+   AC_DEFINE(HAVE_LIB_GTEST, 1, [define if you have google gtest library])
+@@ -211,6 +226,7 @@ AC_SUBST(ac_cv_have_libgflags)
+ AC_SUBST(GFLAGS_CFLAGS)
+ AC_SUBST(GTEST_CFLAGS)
+ AC_SUBST(GMOCK_CFLAGS)
++AC_SUBST(MINGW_CFLAGS)
+ AC_SUBST(GFLAGS_LIBS)
+ AC_SUBST(GTEST_LIBS)
+ AC_SUBST(GMOCK_LIBS)
+diff -rupN glog-0.3.3/src/config.h.in glog-latest/src/config.h.in
+--- glog-0.3.3/src/config.h.in	2013-01-31 22:21:59.000000000 -0800
++++ glog-latest/src/config.h.in	2013-10-23 12:49:21.000000000 -0700
+@@ -48,15 +48,24 @@
+ /* define if the compiler implements namespaces */
+ #undef HAVE_NAMESPACES
+ 
++/* Define if you have the 'pread' function */
++#undef HAVE_PREAD
++
+ /* Define if you have POSIX threads libraries and header files. */
+ #undef HAVE_PTHREAD
+ 
+ /* Define to 1 if you have the <pwd.h> header file. */
+ #undef HAVE_PWD_H
+ 
++/* Define if you have the 'pwrite' function */
++#undef HAVE_PWRITE
++
+ /* define if the compiler implements pthread_rwlock_* */
+ #undef HAVE_RWLOCK
+ 
++/* Define if you have the 'sigaction' function */
++#undef HAVE_SIGACTION
++
+ /* Define if you have the `sigaltstack' function */
+ #undef HAVE_SIGALTSTACK
+ 
+diff -rupN glog-0.3.3/src/glog/stl_logging.h.in glog-latest/src/glog/stl_logging.h.in
+--- glog-0.3.3/src/glog/stl_logging.h.in	2013-01-09 05:57:36.000000000 -0800
++++ glog-latest/src/glog/stl_logging.h.in	2013-10-23 12:49:21.000000000 -0700
+@@ -34,6 +34,15 @@
+ // LOG(INFO) << "data: " << x;
+ // vector<int> v1, v2;
+ // CHECK_EQ(v1, v2);
++//
++// If you want to use this header file with hash maps or slist, you
++// need to define macros before including this file:
++//
++// - GLOG_STL_LOGGING_FOR_UNORDERED     - <unordered_map> and <unordered_set>
++// - GLOG_STL_LOGGING_FOR_TR1_UNORDERED - <tr1/unordered_(map|set)>
++// - GLOG_STL_LOGGING_FOR_EXT_HASH      - <ext/hash_(map|set)>
++// - GLOG_STL_LOGGING_FOR_EXT_SLIST     - <ext/slist>
++//
+ 
+ #ifndef UTIL_GTL_STL_LOGGING_INL_H_
+ #define UTIL_GTL_STL_LOGGING_INL_H_
+@@ -50,9 +59,21 @@
+ #include <utility>
+ #include <vector>
+ 
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_UNORDERED
++# include <unordered_map>
++# include <unordered_set>
++#endif
++
++#ifdef GLOG_STL_LOGGING_FOR_TR1_UNORDERED
++# include <tr1/unordered_map>
++# include <tr1/unordered_set>
++#endif
++
++#ifdef GLOG_STL_LOGGING_FOR_EXT_HASH
+ # include <ext/hash_set>
+ # include <ext/hash_map>
++#endif
++#ifdef GLOG_STL_LOGGING_FOR_EXT_SLIST
+ # include <ext/slist>
+ #endif
+ 
+@@ -80,7 +101,7 @@ inline std::ostream& operator<<(std::ost
+ OUTPUT_TWO_ARG_CONTAINER(std::vector)
+ OUTPUT_TWO_ARG_CONTAINER(std::deque)
+ OUTPUT_TWO_ARG_CONTAINER(std::list)
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_EXT_SLIST
+ OUTPUT_TWO_ARG_CONTAINER(__gnu_cxx::slist)
+ #endif
+ 
+@@ -109,7 +130,15 @@ inline std::ostream& operator<<(std::ost
+ 
+ OUTPUT_FOUR_ARG_CONTAINER(std::map)
+ OUTPUT_FOUR_ARG_CONTAINER(std::multimap)
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_UNORDERED
++OUTPUT_FOUR_ARG_CONTAINER(std::unordered_set)
++OUTPUT_FOUR_ARG_CONTAINER(std::unordered_multiset)
++#endif
++#ifdef GLOG_STL_LOGGING_FOR_TR1_UNORDERED
++OUTPUT_FOUR_ARG_CONTAINER(std::tr1::unordered_set)
++OUTPUT_FOUR_ARG_CONTAINER(std::tr1::unordered_multiset)
++#endif
++#ifdef GLOG_STL_LOGGING_FOR_EXT_HASH
+ OUTPUT_FOUR_ARG_CONTAINER(__gnu_cxx::hash_set)
+ OUTPUT_FOUR_ARG_CONTAINER(__gnu_cxx::hash_multiset)
+ #endif
+@@ -124,7 +153,15 @@ inline std::ostream& operator<<(std::ost
+   return out; \
+ }
+ 
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_UNORDERED
++OUTPUT_FIVE_ARG_CONTAINER(std::unordered_map)
++OUTPUT_FIVE_ARG_CONTAINER(std::unordered_multimap)
++#endif
++#ifdef GLOG_STL_LOGGING_FOR_TR1_UNORDERED
++OUTPUT_FIVE_ARG_CONTAINER(std::tr1::unordered_map)
++OUTPUT_FIVE_ARG_CONTAINER(std::tr1::unordered_multimap)
++#endif
++#ifdef GLOG_STL_LOGGING_FOR_EXT_HASH
+ OUTPUT_FIVE_ARG_CONTAINER(__gnu_cxx::hash_map)
+ OUTPUT_FIVE_ARG_CONTAINER(__gnu_cxx::hash_multimap)
+ #endif
+diff -rupN glog-0.3.3/src/googletest.h glog-latest/src/googletest.h
+--- glog-0.3.3/src/googletest.h	2012-01-12 00:40:58.000000000 -0800
++++ glog-latest/src/googletest.h	2013-10-23 12:49:21.000000000 -0700
+@@ -81,7 +81,7 @@ static inline string GetTempDir() {
+ #endif
+ }
+ 
+-#ifdef OS_WINDOWS
++#if defined(OS_WINDOWS) && defined(_MSC_VER)
+ // The test will run in glog/vsproject/<project name>
+ // (e.g., glog/vsproject/logging_unittest).
+ static const char TEST_SRC_DIR[] = "../..";
+diff -rupN glog-0.3.3/src/logging.cc glog-latest/src/logging.cc
+--- glog-0.3.3/src/logging.cc	2013-01-22 21:26:35.000000000 -0800
++++ glog-latest/src/logging.cc	2013-10-23 12:49:21.000000000 -0700
+@@ -179,6 +179,38 @@ GLOG_DEFINE_string(log_backtrace_at, "",
+ // TODO(hamaji): consider windows
+ #define PATH_SEPARATOR '/'
+ 
++#ifndef HAVE_PREAD
++static ssize_t pread(int fd, void* buf, size_t count, off_t offset) {
++  off_t orig_offset = lseek(fd, 0, SEEK_CUR);
++  if (orig_offset == (off_t)-1)
++    return -1;
++  if (lseek(fd, offset, SEEK_CUR) == (off_t)-1)
++    return -1;
++  ssize_t len = read(fd, buf, count);
++  if (len < 0)
++    return len;
++  if (lseek(fd, orig_offset, SEEK_SET) == (off_t)-1)
++    return -1;
++  return len;
++}
++#endif  // !HAVE_PREAD
++
++#ifndef HAVE_PWRITE
++static ssize_t pwrite(int fd, void* buf, size_t count, off_t offset) {
++  off_t orig_offset = lseek(fd, 0, SEEK_CUR);
++  if (orig_offset == (off_t)-1)
++    return -1;
++  if (lseek(fd, offset, SEEK_CUR) == (off_t)-1)
++    return -1;
++  ssize_t len = write(fd, buf, count);
++  if (len < 0)
++    return len;
++  if (lseek(fd, orig_offset, SEEK_SET) == (off_t)-1)
++    return -1;
++  return len;
++}
++#endif  // !HAVE_PWRITE
++
+ static void GetHostName(string* hostname) {
+ #if defined(HAVE_SYS_UTSNAME_H)
+   struct utsname buf;
+@@ -286,14 +318,17 @@ static int32 MaxLogSize() {
+   return (FLAGS_max_log_size > 0 ? FLAGS_max_log_size : 1);
+ }
+ 
++// An arbitrary limit on the length of a single log message.  This
++// is so that streaming can be done more efficiently.
++const size_t LogMessage::kMaxLogMessageLen = 30000;
++
+ struct LogMessage::LogMessageData  {
+-  LogMessageData() {};
++  LogMessageData();
+ 
+   int preserved_errno_;      // preserved errno
+-  char* buf_;                   // buffer space for non FATAL messages
+-  char* message_text_;  // Complete message text (points to selected buffer)
+-  LogStream* stream_alloc_;
+-  LogStream* stream_;
++  // Buffer space; contains complete message text.
++  char message_text_[LogMessage::kMaxLogMessageLen+1];
++  LogStream stream_;
+   char severity_;      // What level is this LogMessage logged at?
+   int line_;                 // line number where logging call is.
+   void (LogMessage::*send_method_)();  // Call this in destructor to send
+@@ -312,8 +347,6 @@ struct LogMessage::LogMessageData  {
+   bool has_been_flushed_;       // false => data has not been flushed
+   bool first_fatal_;            // true => this was first fatal msg
+ 
+-  ~LogMessageData();
+-
+  private:
+   LogMessageData(const LogMessageData&);
+   void operator=(const LogMessageData&);
+@@ -887,8 +920,10 @@ bool LogFileObject::CreateLogfile(const 
+     linkpath += linkname;
+     unlink(linkpath.c_str());                    // delete old one if it exists
+ 
++#if defined(OS_WINDOWS)
++    // TODO(hamaji): Create lnk file on Windows?
++#elif defined(HAVE_UNISTD_H)
+     // We must have unistd.h.
+-#ifdef HAVE_UNISTD_H
+     // Make the symlink be relative (in the same dir) so that if the
+     // entire log directory gets relocated the link is still valid.
+     const char *linkdest = slash ? (slash + 1) : filename;
+@@ -1079,9 +1114,6 @@ void LogFileObject::Write(bool force_flu
+ 
+ }  // namespace
+ 
+-// An arbitrary limit on the length of a single log message.  This
+-// is so that streaming can be done more efficiently.
+-const size_t LogMessage::kMaxLogMessageLen = 30000;
+ 
+ // Static log data space to avoid alloc failures in a LOG(FATAL)
+ //
+@@ -1092,25 +1124,18 @@ const size_t LogMessage::kMaxLogMessageL
+ static Mutex fatal_msg_lock;
+ static CrashReason crash_reason;
+ static bool fatal_msg_exclusive = true;
+-static char fatal_msg_buf_exclusive[LogMessage::kMaxLogMessageLen+1];
+-static char fatal_msg_buf_shared[LogMessage::kMaxLogMessageLen+1];
+-static LogMessage::LogStream fatal_msg_stream_exclusive(
+-    fatal_msg_buf_exclusive, LogMessage::kMaxLogMessageLen, 0);
+-static LogMessage::LogStream fatal_msg_stream_shared(
+-    fatal_msg_buf_shared, LogMessage::kMaxLogMessageLen, 0);
+ static LogMessage::LogMessageData fatal_msg_data_exclusive;
+ static LogMessage::LogMessageData fatal_msg_data_shared;
+ 
+-LogMessage::LogMessageData::~LogMessageData() {
+-  delete[] buf_;
+-  delete stream_alloc_;
++LogMessage::LogMessageData::LogMessageData()
++  : stream_(message_text_, LogMessage::kMaxLogMessageLen, 0) {
+ }
+ 
+ LogMessage::LogMessage(const char* file, int line, LogSeverity severity,
+                        int ctr, void (LogMessage::*send_method)())
+     : allocated_(NULL) {
+   Init(file, line, severity, send_method);
+-  data_->stream_->set_ctr(ctr);
++  data_->stream_.set_ctr(ctr);
+ }
+ 
+ LogMessage::LogMessage(const char* file, int line,
+@@ -1160,27 +1185,17 @@ void LogMessage::Init(const char* file,
+   if (severity != GLOG_FATAL || !exit_on_dfatal) {
+     allocated_ = new LogMessageData();
+     data_ = allocated_;
+-    data_->buf_ = new char[kMaxLogMessageLen+1];
+-    data_->message_text_ = data_->buf_;
+-    data_->stream_alloc_ =
+-        new LogStream(data_->message_text_, kMaxLogMessageLen, 0);
+-    data_->stream_ = data_->stream_alloc_;
+     data_->first_fatal_ = false;
+   } else {
+     MutexLock l(&fatal_msg_lock);
+     if (fatal_msg_exclusive) {
+       fatal_msg_exclusive = false;
+       data_ = &fatal_msg_data_exclusive;
+-      data_->message_text_ = fatal_msg_buf_exclusive;
+-      data_->stream_ = &fatal_msg_stream_exclusive;
+       data_->first_fatal_ = true;
+     } else {
+       data_ = &fatal_msg_data_shared;
+-      data_->message_text_ = fatal_msg_buf_shared;
+-      data_->stream_ = &fatal_msg_stream_shared;
+       data_->first_fatal_ = false;
+     }
+-    data_->stream_alloc_ = NULL;
+   }
+ 
+   stream().fill('0');
+@@ -1221,7 +1236,7 @@ void LogMessage::Init(const char* file,
+              << ' '
+              << data_->basename_ << ':' << data_->line_ << "] ";
+   }
+-  data_->num_prefix_chars_ = data_->stream_->pcount();
++  data_->num_prefix_chars_ = data_->stream_.pcount();
+ 
+   if (!FLAGS_log_backtrace_at.empty()) {
+     char fileline[128];
+@@ -1246,7 +1261,7 @@ int LogMessage::preserved_errno() const 
+ }
+ 
+ ostream& LogMessage::stream() {
+-  return *(data_->stream_);
++  return data_->stream_;
+ }
+ 
+ // Flush buffered message, called by the destructor, or any other function
+@@ -1255,7 +1270,7 @@ void LogMessage::Flush() {
+   if (data_->has_been_flushed_ || data_->severity_ < FLAGS_minloglevel)
+     return;
+ 
+-  data_->num_chars_to_log_ = data_->stream_->pcount();
++  data_->num_chars_to_log_ = data_->stream_.pcount();
+   data_->num_chars_to_syslog_ =
+     data_->num_chars_to_log_ - data_->num_prefix_chars_;
+ 
+@@ -1305,7 +1320,7 @@ void LogMessage::Flush() {
+ 
+ // Copy of first FATAL log message so that we can print it out again
+ // after all the stack traces.  To preserve legacy behavior, we don't
+-// use fatal_msg_buf_exclusive.
++// use fatal_msg_data_exclusive.
+ static time_t fatal_time;
+ static char fatal_message[256];
+ 
+@@ -1417,7 +1432,7 @@ void LogMessage::RecordCrashReason(
+     glog_internal_namespace_::CrashReason* reason) {
+   reason->filename = fatal_msg_data_exclusive.fullname_;
+   reason->line_number = fatal_msg_data_exclusive.line_;
+-  reason->message = fatal_msg_buf_exclusive +
++  reason->message = fatal_msg_data_exclusive.message_text_ +
+                     fatal_msg_data_exclusive.num_prefix_chars_;
+ #ifdef HAVE_STACKTRACE
+   // Retrieve the stack trace, omitting the logging frames that got us here.
+@@ -1824,8 +1839,11 @@ void TruncateLogFile(const char *path, i
+   int64 read_offset, write_offset;
+   // Don't follow symlinks unless they're our own fd symlinks in /proc
+   int flags = O_RDWR;
++  // TODO(hamaji): Support other environments.
++#ifdef OS_LINUX
+   const char *procfd_prefix = "/proc/self/fd/";
+   if (strncmp(procfd_prefix, path, strlen(procfd_prefix))) flags |= O_NOFOLLOW;
++#endif
+ 
+   int fd = open(path, flags);
+   if (fd == -1) {
+diff -rupN glog-0.3.3/src/signalhandler.cc glog-latest/src/signalhandler.cc
+--- glog-0.3.3/src/signalhandler.cc	2012-01-12 00:40:58.000000000 -0800
++++ glog-latest/src/signalhandler.cc	2013-10-23 12:49:21.000000000 -0700
+@@ -48,6 +48,9 @@
+ 
+ _START_GOOGLE_NAMESPACE_
+ 
++// TOOD(hamaji): Use signal instead of sigaction?
++#ifdef HAVE_SIGACTION
++
+ namespace {
+ 
+ // We'll install the failure signal handler for these signals.  We could
+@@ -330,7 +333,10 @@ void FailureSignalHandler(int signal_num
+ 
+ }  // namespace
+ 
++#endif  // HAVE_SIGACTION
++
+ void InstallFailureSignalHandler() {
++#ifdef HAVE_SIGACTION
+   // Build the sigaction struct.
+   struct sigaction sig_action;
+   memset(&sig_action, 0, sizeof(sig_action));
+@@ -341,10 +347,13 @@ void InstallFailureSignalHandler() {
+   for (size_t i = 0; i < ARRAYSIZE(kFailureSignals); ++i) {
+     CHECK_ERR(sigaction(kFailureSignals[i].number, &sig_action, NULL));
+   }
++#endif  // HAVE_SIGACTION
+ }
+ 
+ void InstallFailureWriter(void (*writer)(const char* data, int size)) {
++#ifdef HAVE_SIGACTION
+   g_failure_writer = writer;
++#endif  // HAVE_SIGACTION
+ }
+ 
+ _END_GOOGLE_NAMESPACE_
+diff -rupN glog-0.3.3/src/stl_logging_unittest.cc glog-latest/src/stl_logging_unittest.cc
+--- glog-0.3.3/src/stl_logging_unittest.cc	2013-01-09 05:59:57.000000000 -0800
++++ glog-latest/src/stl_logging_unittest.cc	2013-10-23 12:53:05.000000000 -0700
+@@ -31,6 +31,16 @@
+ 
+ #ifdef HAVE_USING_OPERATOR
+ 
++#if defined(__GLIBCPP__) || defined(__GLIBCXX__)
++// C++0x isn't enabled by default.
++// # define GLOG_STL_LOGGING_FOR_UNORDERED
++# define GLOG_STL_LOGGING_FOR_TR1_UNORDERED
++# define GLOG_STL_LOGGING_FOR_EXT_HASH
++# define GLOG_STL_LOGGING_FOR_EXT_SLIST
++#eilif defined(_LIBCPP_VERSION)
++# define GLOG_STL_LOGGING_FOR_UNORDERED
++#endif
++
+ #include "glog/stl_logging.h"
+ 
+ #include <iostream>
+@@ -39,16 +49,11 @@
+ #include <string>
+ #include <vector>
+ 
+-#ifdef __GNUC__
+-# include <ext/hash_map>
+-# include <ext/hash_set>
+-#endif
+-
+ #include "glog/logging.h"
+ #include "googletest.h"
+ 
+ using namespace std;
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_EXT_HASH
+ using namespace __gnu_cxx;
+ #endif
+ 
+@@ -83,7 +88,7 @@ void TestSTLLogging() {
+     CHECK_EQ(m, copied_m);  // This must compile.
+   }
+ 
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_EXT_HASH
+   {
+     // Test a hashed simple associative container.
+     hash_set<int> hs;
+@@ -98,7 +103,7 @@ void TestSTLLogging() {
+   }
+ #endif
+ 
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_EXT_HASH
+   {
+     // Test a hashed pair associative container.
+     hash_map<int, string> hm;
+@@ -145,7 +150,7 @@ void TestSTLLogging() {
+     CHECK_EQ(m, copied_m);  // This must compile.
+   }
+ 
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_EXT_HASH
+   {
+     // Test a hashed simple associative container.
+     // Use a user defined hash function.
+diff -rupN glog-0.3.3/src/symbolize.cc glog-latest/src/symbolize.cc
+--- glog-0.3.3/src/symbolize.cc	2012-01-12 00:40:58.000000000 -0800
++++ glog-latest/src/symbolize.cc	2013-10-23 12:49:21.000000000 -0700
+@@ -232,7 +232,7 @@ bool GetSectionHeaderByName(int fd, cons
+     }
+     char header_name[kMaxSectionNameLen];
+     if (sizeof(header_name) < name_len) {
+-      RAW_LOG(WARNING, "Section name '%s' is too long (%"PRIuS"); "
++      RAW_LOG(WARNING, "Section name '%s' is too long (%" PRIuS "); "
+               "section will not be found (even if present).", name, name_len);
+       // No point in even trying.
+       return false;
+diff -rupN glog-0.3.3/src/utilities.cc glog-latest/src/utilities.cc
+--- glog-0.3.3/src/utilities.cc	2013-01-09 23:31:27.000000000 -0800
++++ glog-latest/src/utilities.cc	2013-10-23 12:49:21.000000000 -0700
+@@ -136,6 +136,8 @@ static void DumpStackTrace(int skip_coun
+ static void DumpStackTraceAndExit() {
+   DumpStackTrace(1, DebugWriteToStderr, NULL);
+ 
++  // TOOD(hamaji): Use signal instead of sigaction?
++#ifdef HAVE_SIGACTION
+   // Set the default signal handler for SIGABRT, to avoid invoking our
+   // own signal handler installed by InstallFailedSignalHandler().
+   struct sigaction sig_action;
+@@ -143,6 +145,7 @@ static void DumpStackTraceAndExit() {
+   sigemptyset(&sig_action.sa_mask);
+   sig_action.sa_handler = SIG_DFL;
+   sigaction(SIGABRT, &sig_action, NULL);
++#endif  // HAVE_SIGACTION
+ 
+   abort();
+ }
+diff -rupN glog-0.3.3/src/windows/config.h glog-latest/src/windows/config.h
+--- glog-0.3.3/src/windows/config.h	2012-01-11 01:14:16.000000000 -0800
++++ glog-latest/src/windows/config.h	2013-10-23 12:49:20.000000000 -0700
+@@ -3,121 +3,6 @@
+ /* Namespace for Google classes */
+ #define GOOGLE_NAMESPACE google
+ 
+-/* Define if you have the `dladdr' function */
+-#undef HAVE_DLADDR
+-
+-/* Define to 1 if you have the <dlfcn.h> header file. */
+-#undef HAVE_DLFCN_H
+-
+-/* Define to 1 if you have the <execinfo.h> header file. */
+-#undef HAVE_EXECINFO_H
+-
+-/* Define to 1 if you have the <inttypes.h> header file. */
+-#undef HAVE_INTTYPES_H
+-
+-/* Define to 1 if you have the <libunwind.h> header file. */
+-#undef HAVE_LIBUNWIND_H
+-
+-/* define if you have google gflags library */
+-#undef HAVE_LIB_GFLAGS
+-
+-/* define if you have libunwind */
+-#undef HAVE_LIB_UNWIND
+-
+-/* Define to 1 if you have the <memory.h> header file. */
+-#undef HAVE_MEMORY_H
+-
+-/* define if the compiler implements namespaces */
+-#undef HAVE_NAMESPACES
+-
+-/* Define if you have POSIX threads libraries and header files. */
+-#undef HAVE_PTHREAD
+-
+-/* define if the compiler implements pthread_rwlock_* */
+-#undef HAVE_RWLOCK
+-
+-/* Define if you have the `sigaltstack' function */
+-#undef HAVE_SIGALTSTACK
+-
+-/* Define to 1 if you have the <stdint.h> header file. */
+-#undef HAVE_STDINT_H
+-
+-/* Define to 1 if you have the <stdlib.h> header file. */
+-#undef HAVE_STDLIB_H
+-
+-/* Define to 1 if you have the <strings.h> header file. */
+-#undef HAVE_STRINGS_H
+-
+-/* Define to 1 if you have the <string.h> header file. */
+-#undef HAVE_STRING_H
+-
+-/* Define to 1 if you have the <syscall.h> header file. */
+-#undef HAVE_SYSCALL_H
+-
+-/* Define to 1 if you have the <sys/stat.h> header file. */
+-#undef HAVE_SYS_STAT_H
+-
+-/* Define to 1 if you have the <sys/syscall.h> header file. */
+-#undef HAVE_SYS_SYSCALL_H
+-
+-/* Define to 1 if you have the <sys/types.h> header file. */
+-#undef HAVE_SYS_TYPES_H
+-
+-/* Define to 1 if you have the <ucontext.h> header file. */
+-#undef HAVE_UCONTEXT_H
+-
+-/* Define to 1 if you have the <unistd.h> header file. */
+-#undef HAVE_UNISTD_H
+-
+-/* define if the compiler supports using expression for operator */
+-#undef HAVE_USING_OPERATOR
+-
+-/* define if your compiler has __attribute__ */
+-#undef HAVE___ATTRIBUTE__
+-
+-/* define if your compiler has __builtin_expect */
+-#undef HAVE___BUILTIN_EXPECT
+-
+-/* define if your compiler has __sync_val_compare_and_swap */
+-#undef HAVE___SYNC_VAL_COMPARE_AND_SWAP
+-
+-/* Name of package */
+-#undef PACKAGE
+-
+-/* Define to the address where bug reports for this package should be sent. */
+-#undef PACKAGE_BUGREPORT
+-
+-/* Define to the full name of this package. */
+-#undef PACKAGE_NAME
+-
+-/* Define to the full name and version of this package. */
+-#undef PACKAGE_STRING
+-
+-/* Define to the one symbol short name of this package. */
+-#undef PACKAGE_TARNAME
+-
+-/* Define to the version of this package. */
+-#undef PACKAGE_VERSION
+-
+-/* How to access the PC from a struct ucontext */
+-#undef PC_FROM_UCONTEXT
+-
+-/* Define to necessary symbol if this constant uses a non-standard name on
+-   your system. */
+-#undef PTHREAD_CREATE_JOINABLE
+-
+-/* The size of `void *', as computed by sizeof. */
+-#undef SIZEOF_VOID_P
+-
+-/* Define to 1 if you have the ANSI C header files. */
+-#undef STDC_HEADERS
+-
+-/* the namespace where STL code like vector<> is defined */
+-#undef STL_NAMESPACE
+-
+-/* Version number of package */
+-#undef VERSION
+-
+ /* Stops putting the code inside the Google namespace */
+ #define _END_GOOGLE_NAMESPACE_ }
+ 
+diff -rupN glog-0.3.3/src/windows/glog/stl_logging.h glog-latest/src/windows/glog/stl_logging.h
+--- glog-0.3.3/src/windows/glog/stl_logging.h	2013-01-24 23:59:05.000000000 -0800
++++ glog-latest/src/windows/glog/stl_logging.h	2013-10-23 12:49:20.000000000 -0700
+@@ -38,6 +38,15 @@
+ // LOG(INFO) << "data: " << x;
+ // vector<int> v1, v2;
+ // CHECK_EQ(v1, v2);
++//
++// If you want to use this header file with hash_compare maps or slist, you
++// need to define macros before including this file:
++//
++// - GLOG_STL_LOGGING_FOR_UNORDERED     - <unordered_map> and <unordered_set>
++// - GLOG_STL_LOGGING_FOR_TR1_UNORDERED - <tr1/unordered_(map|set)>
++// - GLOG_STL_LOGGING_FOR_EXT_HASH      - <ext/hash_(map|set)>
++// - GLOG_STL_LOGGING_FOR_EXT_SLIST     - <ext/slist>
++//
+ 
+ #ifndef UTIL_GTL_STL_LOGGING_INL_H_
+ #define UTIL_GTL_STL_LOGGING_INL_H_
+@@ -54,9 +63,21 @@
+ #include <utility>
+ #include <vector>
+ 
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_UNORDERED
++# include <unordered_map>
++# include <unordered_set>
++#endif
++
++#ifdef GLOG_STL_LOGGING_FOR_TR1_UNORDERED
++# include <tr1/unordered_map>
++# include <tr1/unordered_set>
++#endif
++
++#ifdef GLOG_STL_LOGGING_FOR_EXT_HASH
+ # include <ext/hash_set>
+ # include <ext/hash_map>
++#endif
++#ifdef GLOG_STL_LOGGING_FOR_EXT_SLIST
+ # include <ext/slist>
+ #endif
+ 
+@@ -84,7 +105,7 @@ inline std::ostream& operator<<(std::ost
+ OUTPUT_TWO_ARG_CONTAINER(std::vector)
+ OUTPUT_TWO_ARG_CONTAINER(std::deque)
+ OUTPUT_TWO_ARG_CONTAINER(std::list)
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_EXT_SLIST
+ OUTPUT_TWO_ARG_CONTAINER(__gnu_cxx::slist)
+ #endif
+ 
+@@ -113,7 +134,15 @@ inline std::ostream& operator<<(std::ost
+ 
+ OUTPUT_FOUR_ARG_CONTAINER(std::map)
+ OUTPUT_FOUR_ARG_CONTAINER(std::multimap)
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_UNORDERED
++OUTPUT_FOUR_ARG_CONTAINER(std::unordered_set)
++OUTPUT_FOUR_ARG_CONTAINER(std::unordered_multiset)
++#endif
++#ifdef GLOG_STL_LOGGING_FOR_TR1_UNORDERED
++OUTPUT_FOUR_ARG_CONTAINER(std::tr1::unordered_set)
++OUTPUT_FOUR_ARG_CONTAINER(std::tr1::unordered_multiset)
++#endif
++#ifdef GLOG_STL_LOGGING_FOR_EXT_HASH
+ OUTPUT_FOUR_ARG_CONTAINER(__gnu_cxx::hash_set)
+ OUTPUT_FOUR_ARG_CONTAINER(__gnu_cxx::hash_multiset)
+ #endif
+@@ -128,7 +157,15 @@ inline std::ostream& operator<<(std::ost
+   return out; \
+ }
+ 
+-#ifdef __GNUC__
++#ifdef GLOG_STL_LOGGING_FOR_UNORDERED
++OUTPUT_FIVE_ARG_CONTAINER(std::unordered_map)
++OUTPUT_FIVE_ARG_CONTAINER(std::unordered_multimap)
++#endif
++#ifdef GLOG_STL_LOGGING_FOR_TR1_UNORDERED
++OUTPUT_FIVE_ARG_CONTAINER(std::tr1::unordered_map)
++OUTPUT_FIVE_ARG_CONTAINER(std::tr1::unordered_multimap)
++#endif
++#ifdef GLOG_STL_LOGGING_FOR_EXT_HASH
+ OUTPUT_FIVE_ARG_CONTAINER(__gnu_cxx::hash_map)
+ OUTPUT_FIVE_ARG_CONTAINER(__gnu_cxx::hash_multimap)
+ #endif
+diff -rupN glog-0.3.3/src/windows/port.h glog-latest/src/windows/port.h
+--- glog-0.3.3/src/windows/port.h	2012-07-11 02:04:54.000000000 -0700
++++ glog-latest/src/windows/port.h	2013-10-23 12:49:20.000000000 -0700
+@@ -62,6 +62,8 @@
+  * used by both C and C++ code, so we put all the C++ together.
+  */
+ 
++#ifdef _MSC_VER
++
+ /* 4244: otherwise we get problems when substracting two size_t's to an int
+  * 4251: it's complaining about a private struct I've chosen not to dllexport
+  * 4355: we use this in a constructor, but we do it safely
+@@ -127,6 +129,8 @@ extern int safe_vsnprintf(char *str, siz
+ typedef int pid_t;
+ #define getpid  _getpid
+ 
++#endif  // _MSC_VER
++
+ // ----------------------------------- THREADS
+ typedef DWORD pthread_t;
+ typedef DWORD pthread_key_t;

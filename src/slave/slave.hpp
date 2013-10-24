@@ -296,8 +296,8 @@ private:
     const Slave& slave;
   } http;
 
-  friend class Framework;
-  friend class Executor;
+  friend struct Framework;
+  friend struct Executor;
 
   Slave(const Slave&);              // No copying.
   Slave& operator = (const Slave&); // No assigning.

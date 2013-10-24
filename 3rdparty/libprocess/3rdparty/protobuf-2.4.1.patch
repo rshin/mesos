@@ -1,0 +1,11 @@
+diff -rupN protobuf-2.4.1/src/google/protobuf/message.cc protobuf-2.4.1-patched/src/google/protobuf/message.cc
+--- protobuf-2.4.1/src/google/protobuf/message.cc	2011-04-30 10:22:04.000000000 -0700
++++ protobuf-2.4.1-patched/src/google/protobuf/message.cc	2013-10-23 14:44:05.000000000 -0700
+@@ -32,6 +32,7 @@
+ //  Based on original Protocol Buffers design by
+ //  Sanjay Ghemawat, Jeff Dean, and others.
+ 
++#include <iostream>
+ #include <stack>
+ #include <google/protobuf/stubs/hash.h>
+ 

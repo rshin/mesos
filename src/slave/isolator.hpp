@@ -41,7 +41,7 @@ namespace internal {
 namespace slave {
 namespace state {
 
-class SlaveState; // Forward declaration.
+struct SlaveState; // Forward declaration.
 
 } // namespace state {
 
@@ -63,6 +63,7 @@ public:
       const Resources& resources,
       bool local,
       const process::PID<Slave>& slave) = 0;
+    using process::ProcessBase::initialize;
 
   // Called by the slave to launch an executor for a given framework.
   // If 'checkpoint' is true, the isolator is expected to checkpoint
