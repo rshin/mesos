@@ -250,6 +250,7 @@ protected:
   // Recovers the slave, status update manager and isolator.
   Future<Nothing> recover(const Result<state::SlaveState>& state);
 
+public:
   // This is called after 'recoveR()'. If 'flags.reconnect' is
   // 'reconnect', the slave attempts to reconnect to any old live
   // executors. Otherwise, the slave attempts to shutdown/kill them.
@@ -257,6 +258,7 @@ protected:
 
   // This is called when recovery finishes.
   void __recover(const Future<Nothing>& future);
+protected:
 
   // Helper to recover a framework from the specified state.
   void recoverFramework(const state::FrameworkState& state);
