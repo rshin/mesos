@@ -25,6 +25,7 @@
 #include <mesos/resources.hpp>
 
 #include <process/help.hpp>
+#include <process/owned.hpp>
 
 #include <stout/foreach.hpp>
 #include <stout/json.hpp>
@@ -45,6 +46,7 @@ namespace slave {
 
 using process::Future;
 using process::HELP;
+using process::Owned;
 using process::TLDR;
 using process::USAGE;
 
@@ -261,7 +263,7 @@ const string Slave::Http::HEALTH_HELP = HELP(
     TLDR(
         "Health check of the Slave."),
     USAGE(
-        "/slave(1)/health"),
+        "/health"),
     DESCRIPTION(
         "Returns 200 OK iff the Slave is healthy.",
         "Delayed responses are also indicative of poor health."));
@@ -288,7 +290,7 @@ Future<Response> Slave::Http::stats(const Request& request)
   object.values["lost_tasks"] = slave.stats.tasks[TASK_LOST];
   object.values["valid_status_updates"] = slave.stats.validStatusUpdates;
   object.values["invalid_status_updates"] = slave.stats.invalidStatusUpdates;
-  object.values["registered"] = slave.master ? "1" : "0";
+  object.values["registered"] = slave.master.isSome() ? "1" : "0";
   object.values["recovery_errors"] = slave.recoveryErrors;
 
   return OK(object, request.query.get("jsonp"));
@@ -301,6 +303,19 @@ Future<Response> Slave::Http::state(const Request& request)
 
   JSON::Object object;
   object.values["version"] = MESOS_VERSION;
+
+  if (build::GIT_SHA.isSome()) {
+    object.values["git_sha"] = build::GIT_SHA.get();
+  }
+
+  if (build::GIT_BRANCH.isSome()) {
+    object.values["git_branch"] = build::GIT_BRANCH.get();
+  }
+
+  if (build::GIT_TAG.isSome()) {
+    object.values["git_tag"] = build::GIT_TAG.get();
+  }
+
   object.values["build_date"] = build::DATE;
   object.values["build_time"] = build::TIME;
   object.values["build_user"] = build::USER;
@@ -317,9 +332,11 @@ Future<Response> Slave::Http::state(const Request& request)
   object.values["failed_tasks"] = slave.stats.tasks[TASK_FAILED];
   object.values["lost_tasks"] = slave.stats.tasks[TASK_LOST];
 
-  Try<string> masterHostname = net::getHostname(slave.master.ip);
-  if (masterHostname.isSome()) {
-    object.values["master_hostname"] = masterHostname.get();
+  if (slave.master.isSome()) {
+    Try<string> masterHostname = net::getHostname(slave.master.get().ip);
+    if (masterHostname.isSome()) {
+      object.values["master_hostname"] = masterHostname.get();
+    }
   }
 
   if (slave.flags.log_dir.isSome()) {
@@ -337,6 +354,15 @@ Future<Response> Slave::Http::state(const Request& request)
     completedFrameworks.values.push_back(model(*framework));
   }
   object.values["completed_frameworks"] = completedFrameworks;
+
+  JSON::Object flags;
+  foreachpair (const string& name, const flags::Flag& flag, slave.flags) {
+    Option<string> value = flag.stringify(slave.flags);
+    if (value.isSome()) {
+      flags.values[name] = value.get();
+    }
+  }
+  object.values["flags"] = flags;
 
   return OK(object, request.query.get("jsonp"));
 }

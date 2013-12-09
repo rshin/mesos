@@ -211,14 +211,17 @@ void ProcessIsolator::launchExecutor(
     const char** args = (const char**) new char*[2];
 
     // Determine path for mesos-launcher.
-    Try<string> realpath = os::realpath(
+    Result<string> realpath = os::realpath(
         path::join(flags.launcher_dir, "mesos-launcher"));
 
-    if (realpath.isError()) {
+    if (!realpath.isSome()) {
       EXIT(1) << "Failed to determine the canonical path "
               << "for the mesos-launcher '"
               << path::join(flags.launcher_dir, "mesos-launcher")
-              << "': " << realpath.error();
+              << "': "
+              << (realpath.isError()
+                  ? realpath.error()
+                  : "No such file or directory");
     }
 
     // Grab a copy of the path so that we can reliably use 'c_str()'.
@@ -375,7 +378,7 @@ Future<ResourceStatistics> ProcessIsolator::usage(
   if (!infos.contains(frameworkId) ||
       !infos[frameworkId].contains(executorId) ||
       infos[frameworkId][executorId]->killed) {
-    return Future<ResourceStatistics>::failed("Unknown/killed executor");
+    return Failure("Unknown/killed executor");
   }
 
   ProcessInfo* info = infos[frameworkId][executorId];
@@ -401,7 +404,7 @@ Future<ResourceStatistics> ProcessIsolator::usage(
   Result<os::Process> process = os::process(info->pid.get());
 
   if (!process.isSome()) {
-    return Future<ResourceStatistics>::failed(
+    return Failure(
         process.isError() ? process.error() : "Process does not exist");
   }
 
@@ -422,7 +425,7 @@ Future<ResourceStatistics> ProcessIsolator::usage(
   const Try<set<pid_t> >& children = os::children(info->pid.get(), true);
 
   if (children.isError()) {
-    return Future<ResourceStatistics>::failed(
+    return Failure(
         "Failed to get children of " + stringify(info->pid.get()) + ": " +
         children.error());
   }

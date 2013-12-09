@@ -53,14 +53,13 @@
 #include <stout/strings.hpp>
 #include <stout/uuid.hpp>
 
-#include "common/units.hpp"
-
 #include "linux/cgroups.hpp"
 
 #include "slave/cgroups_isolator.hpp"
 #include "slave/state.hpp"
 
 using process::defer;
+using process::Failure;
 using process::Future;
 
 using std::list;
@@ -730,7 +729,7 @@ Future<ResourceStatistics> CgroupsIsolator::usage(
   if (!infos.contains(frameworkId) ||
       !infos[frameworkId].contains(executorId) ||
       infos[frameworkId][executorId]->killed) {
-    return Future<ResourceStatistics>::failed("Unknown or killed executor");
+    return Failure("Unknown or killed executor");
   }
 
   // Get the number of clock ticks, used for cpu accounting.
@@ -759,8 +758,7 @@ Future<ResourceStatistics> CgroupsIsolator::usage(
     cgroups::stat(hierarchy, info->name(), "cpuacct.stat");
 
   if (stat.isError()) {
-    return Future<ResourceStatistics>::failed(
-        "Failed to read cpuacct.stat: " + stat.error());
+    return Failure("Failed to read cpuacct.stat: " + stat.error());
   }
 
   // TODO(bmahler): Add namespacing to cgroups to enforce the expected
@@ -772,25 +770,40 @@ Future<ResourceStatistics> CgroupsIsolator::usage(
         (double) stat.get()["system"] / (double) ticks);
   }
 
-  stat = cgroups::stat(hierarchy, info->name(), "memory.stat");
-
-  if (stat.isError()) {
-    return Future<ResourceStatistics>::failed(
-        "Failed to read memory.stat: " + stat.error());
+  // The rss from memory.stat is wrong in two dimensions:
+  //   1. It does not include child cgroups.
+  //   2. It does not include any file backed pages.
+  Try<Bytes> usage = cgroups::memory::usage_in_bytes(hierarchy, info->name());
+  if (usage.isError()) {
+    return Failure("Failed to parse memory.usage_in_bytes: " + usage.error());
   }
 
   // TODO(bmahler): Add namespacing to cgroups to enforce the expected
   // structure, e.g, cgroups::memory::stat.
-  if (stat.get().contains("rss")) {
-    result.set_mem_rss_bytes(stat.get()["rss"]);
+  result.set_mem_rss_bytes(usage.get().bytes());
+
+  stat = cgroups::stat(hierarchy, info->name(), "memory.stat");
+  if (stat.isError()) {
+    return Failure("Failed to read memory.stat: " + stat.error());
+  }
+
+  if (stat.get().contains("total_cache")) {
+    result.set_mem_file_bytes(stat.get()["total_cache"]);
+  }
+
+  if (stat.get().contains("total_rss")) {
+    result.set_mem_anon_bytes(stat.get()["total_rss"]);
+  }
+
+  if (stat.get().contains("total_mapped_file")) {
+    result.set_mem_mapped_file_bytes(stat.get()["total_mapped_file"]);
   }
 
   // Add the cpu.stat information.
   stat = cgroups::stat(hierarchy, info->name(), "cpu.stat");
 
   if (stat.isError()) {
-    return Future<ResourceStatistics>::failed(
-        "Failed to read cpu.stat: " + stat.error());
+    return Failure("Failed to read cpu.stat: " + stat.error());
   }
 
   if (stat.get().contains("nr_periods")) {
@@ -905,7 +918,7 @@ Future<Nothing> CgroupsIsolator::recover(
   // should be safe because we've been able to acquire the file lock).
   Try<vector<string> > orphans = cgroups::get(hierarchy, flags.cgroups_root);
   if (orphans.isError()) {
-    return Future<Nothing>::failed(orphans.error());
+    return Failure(orphans.error());
   }
 
   foreach (const string& orphan, orphans.get()) {
@@ -937,12 +950,19 @@ void CgroupsIsolator::reaped(pid_t pid, const Future<Option<int> >& status)
       return;
     }
 
-    LOG(INFO) << "Executor " << executorId
-              << " of framework " << frameworkId
-              << " terminated with status "
-              << (status.get().isSome()
-                  ? stringify(status.get().get())
-                  : "unknown");
+    if (status.get().isSome()) {
+      int _status = status.get().get();
+      LOG(INFO) << "Executor '" << executorId
+                << "' of framework " << frameworkId
+                << (WIFEXITED(_status) ? " has exited with status "
+                                       : " has terminated with signal ")
+                << (WIFEXITED(_status) ? stringify(WEXITSTATUS(_status))
+                                       : strsignal(WTERMSIG(_status)));
+    } else {
+      LOG(WARNING) << "Executor '" << executorId
+                   << "' of framework " << frameworkId
+                   << " terminated with unknown status";
+    }
 
     // Set the exit status, so that '_killExecutor()' can send it to the slave.
     info->status = status.get();
@@ -1203,9 +1223,12 @@ void CgroupsIsolator::oom(
     return;
   }
 
-  // If killed is set, the OOM notifier will be discarded in oomWaited.
-  // Therefore, we should not be able to reach this point.
-  CHECK(!info->killed) << "OOM detected for an already killed executor";
+  // It's possible for an executor to OOM right as it was being
+  // killed, ignore this case.
+  if (info->killed) {
+    LOG(INFO) << "OOM detected for an already killed executor";
+    return;
+  }
 
   LOG(INFO) << "OOM detected for executor " << executorId
             << " of framework " << frameworkId

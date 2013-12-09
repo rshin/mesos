@@ -5,11 +5,13 @@
 
 #include <stout/duration.hpp>
 #include <stout/flags.hpp>
+#include <stout/foreach.hpp>
 #include <stout/gtest.hpp>
 #include <stout/none.hpp>
 #include <stout/nothing.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
+#include <stout/some.hpp>
 
 
 using namespace flags;
@@ -57,9 +59,9 @@ TEST(FlagsTest, Load)
 
   std::map<std::string, Option<std::string> > values;
 
-  values["name1"] = Option<std::string>::some("billy joel");
-  values["name2"] = Option<std::string>::some("43");
-  values["name3"] = Option<std::string>::some("false");
+  values["name1"] = Some("billy joel");
+  values["name2"] = Some("43");
+  values["name3"] = Some("false");
   values["no-name4"] = None();
   values["name5"] = None();
 
@@ -100,7 +102,7 @@ TEST(FlagsTest, Add)
 
   std::map<std::string, Option<std::string> > values;
 
-  values["name6"] = Option<std::string>::some("ben folds");
+  values["name6"] = Some("ben folds");
   values["no-name7"] = None();
 
   flags.load(values);
@@ -120,9 +122,9 @@ TEST(FlagsTest, Flags)
 
   std::map<std::string, Option<std::string> > values;
 
-  values["name1"] = Option<std::string>::some("billy joel");
-  values["name2"] = Option<std::string>::some("43");
-  values["name3"] = Option<std::string>::some("false");
+  values["name1"] = Some("billy joel");
+  values["name2"] = Some("43");
+  values["name3"] = Some("false");
   values["no-name4"] = None();
   values["name5"] = None();
 
@@ -223,6 +225,66 @@ TEST(FlagsTest, LoadFromCommandLineWithNonFlags)
   EXPECT_FALSE(flags.name4.get());
   ASSERT_SOME(flags.name5);
   EXPECT_TRUE(flags.name5.get());
+}
+
+
+TEST(FlagsTest, Stringification)
+{
+  TestFlags flags;
+
+  Duration name6;
+
+  flags.add(&name6,
+            "name6",
+            "Also set name6",
+            Milliseconds(42));
+
+  Option<bool> name7;
+
+  flags.add(&name7,
+            "name7",
+            "Optional name7");
+
+  Option<bool> name8;
+
+  flags.add(&name8,
+            "name8",
+            "Optional name8");
+
+  std::map<std::string, Option<std::string> > values;
+
+  values["name2"] = Some("43");
+  values["no-name4"] = None();
+  values["name5"] = None();
+
+  flags.load(values);
+
+  foreachpair(const std::string& name, const Flag& flag, flags) {
+    Option<std::string> value = flag.stringify(flags);
+    if (name == "name1") {
+      ASSERT_SOME(value);
+      EXPECT_EQ("ben folds", value.get());
+    } else if (name == "name2") {
+      ASSERT_SOME(value);
+      EXPECT_EQ("43", value.get());
+    } else if (name == "name3") {
+      ASSERT_SOME(value);
+      EXPECT_EQ("false", value.get());
+    } else if (name == "name4") {
+      ASSERT_SOME(value);
+      EXPECT_EQ("false", value.get());
+    } else if (name == "name5") {
+      ASSERT_SOME(value);
+      EXPECT_EQ("true", value.get());
+    } else if (name == "name6") {
+      ASSERT_SOME(value);
+      EXPECT_EQ("42ms", value.get());
+    } else if (name == "name7") {
+      ASSERT_NONE(value);
+    } else if (name == "name8") {
+      ASSERT_NONE(value);
+    }
+  }
 }
 
 
@@ -369,8 +431,8 @@ TEST(FlagsTest, Duration)
 
   std::map<std::string, Option<std::string> > values;
 
-  values["name6"] = Option<std::string>::some("2mins");
-  values["name7"] = Option<std::string>::some("3hrs");
+  values["name6"] = Some("2mins");
+  values["name7"] = Some("3hrs");
 
   flags.load(values);
 

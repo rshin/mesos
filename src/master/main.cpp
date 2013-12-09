@@ -19,26 +19,38 @@
 #include <mesos/mesos.hpp>
 
 #include <stout/check.hpp>
+#include <stout/exit.hpp>
 #include <stout/flags.hpp>
 #include <stout/nothing.hpp>
 #include <stout/os.hpp>
+#include <stout/path.hpp>
 #include <stout/stringify.hpp>
+#include <stout/strings.hpp>
 #include <stout/try.hpp>
 
 #include "common/build.hpp"
-
-#include "detector/detector.hpp"
 
 #include "logging/flags.hpp"
 #include "logging/logging.hpp"
 
 #include "master/allocator.hpp"
+#include "master/contender.hpp"
+#include "master/detector.hpp"
 #include "master/drf_sorter.hpp"
 #include "master/hierarchical_allocator_process.hpp"
 #include "master/master.hpp"
+#include "master/registrar.hpp"
+
+#include "state/leveldb.hpp"
+#include "state/protobuf.hpp"
+#include "state/storage.hpp"
+
+
+#include "zookeeper/detector.hpp"
 
 using namespace mesos::internal;
 using namespace mesos::internal::master;
+using namespace zookeeper;
 
 using mesos::MasterInfo;
 
@@ -112,28 +124,70 @@ int main(int argc, char** argv)
   logging::initialize(argv[0], flags, true); // Catch signals.
 
   LOG(INFO) << "Build: " << build::DATE << " by " << build::USER;
-  LOG(INFO) << "Starting Mesos master";
 
   allocator::AllocatorProcess* allocatorProcess =
     new allocator::HierarchicalDRFAllocatorProcess();
   allocator::Allocator* allocator =
     new allocator::Allocator(allocatorProcess);
 
+  state::Storage* storage = NULL;
+
+  if (strings::startsWith(flags.registry, "zk://")) {
+    // TODO(benh):
+    EXIT(1) << "ZooKeeper based registry unimplemented";
+  } else if (flags.registry == "local") {
+    storage = new state::LevelDBStorage(path::join(flags.work_dir, "registry"));
+  } else {
+    EXIT(1) << "'" << flags.registry << "' is not a supported"
+            << " option for registry persistence";
+  }
+
+  CHECK_NOTNULL(storage);
+
+  state::protobuf::State* state = new state::protobuf::State(storage);
+  Registrar* registrar = new Registrar(state);
+
   Files files;
-  Master* master = new Master(allocator, &files, flags);
+
+  MasterContender* contender;
+  MasterDetector* detector;
+
+  Try<MasterContender*> contender_ = MasterContender::create(zk);
+  if (contender_.isError()) {
+    EXIT(1) << "Failed to create a master contender: " << contender_.error();
+  }
+  contender = contender_.get();
+
+  Try<MasterDetector*> detector_ = MasterDetector::create(zk);
+  if (detector_.isError()) {
+    EXIT(1) << "Failed to create a master detector: " << detector_.error();
+  }
+  detector = detector_.get();
+
+  LOG(INFO) << "Starting Mesos master";
+
+  Master* master = new Master(
+      allocator, registrar, &files, contender, detector, flags);
+
+  if (zk == "") {
+    // It means we are using the standalone detector so we need to
+    // appoint this Master as the leader.
+    dynamic_cast<StandaloneMasterDetector*>(detector)->appoint(master->self());
+  }
+
   process::spawn(master);
-
-  Try<MasterDetector*> detector =
-    MasterDetector::create(zk, master->self(), true, flags.quiet);
-
-  CHECK_SOME(detector) << "Failed to create a master detector";
 
   process::wait(master->self());
   delete master;
   delete allocator;
   delete allocatorProcess;
 
-  MasterDetector::destroy(detector.get());
+  delete registrar;
+  delete state;
+  delete storage;
+
+  delete contender;
+  delete detector;
 
   return 0;
 }

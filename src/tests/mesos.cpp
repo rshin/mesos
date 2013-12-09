@@ -13,6 +13,7 @@
 #include "tests/isolator.hpp"
 #include "tests/mesos.hpp"
 
+using namespace process;
 
 namespace mesos {
 namespace internal {
@@ -31,6 +32,8 @@ master::Flags MesosTest::CreateMasterFlags()
   // Create a temporary work directory (removed by Environment).
   const Try<std::string>& directory = environment->mkdtemp();
   CHECK_SOME(directory) << "Failed to create temporary directory";
+
+  flags.work_dir = directory.get();
 
   // Create a default credentials file.
   const std::string& path = path::join(directory.get(), "credentials");
@@ -129,6 +132,46 @@ Try<process::PID<slave::Slave> > MesosTest::StartSlave(
 {
   return cluster.slaves.start(
       isolator, flags.isNone() ? CreateSlaveFlags() : flags.get());
+}
+
+
+Try<process::PID<slave::Slave> > MesosTest::StartSlave(
+    slave::Isolator* isolator,
+    Owned<MasterDetector> detector,
+    const Option<slave::Flags>& flags)
+{
+  return cluster.slaves.start(
+      isolator, detector, flags.isNone() ? CreateSlaveFlags() : flags.get());
+}
+
+
+Try<PID<slave::Slave> > MesosTest::StartSlave(
+    Owned<MasterDetector> detector,
+    const Option<slave::Flags>& flags)
+{
+  return cluster.slaves.start(
+      detector, flags.isNone() ? CreateSlaveFlags() : flags.get());
+}
+
+
+Try<PID<slave::Slave> > MesosTest::StartSlave(
+    MockExecutor* executor,
+    Owned<MasterDetector> detector,
+    const Option<slave::Flags>& flags)
+{
+  TestingIsolator* isolator = new TestingIsolator(executor);
+
+  Try<process::PID<slave::Slave> > pid = cluster.slaves.start(
+      isolator, detector, flags.isNone() ? CreateSlaveFlags() : flags.get());
+
+  if (pid.isError()) {
+    delete isolator;
+    return pid;
+  }
+
+  isolators[pid.get()] = isolator;
+
+  return pid;
 }
 
 

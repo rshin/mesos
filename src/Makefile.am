@@ -161,12 +161,15 @@ libmesos_no_3rdparty_la_SOURCES =					\
 	sasl/auxprop.cpp						\
 	sched/sched.cpp							\
 	local/local.cpp							\
+	master/contender.cpp						\
 	master/constants.cpp						\
+	master/detector.cpp						\
 	master/drf_sorter.cpp						\
 	master/http.cpp							\
 	master/master.cpp						\
 	master/registry.hpp						\
 	master/registry.proto                                           \
+	master/registrar.cpp						\
 	slave/constants.cpp						\
 	slave/gc.cpp							\
 	slave/monitor.cpp						\
@@ -180,13 +183,14 @@ libmesos_no_3rdparty_la_SOURCES =					\
 	launcher/launcher.cpp						\
 	exec/exec.cpp							\
 	common/lock.cpp							\
-	detector/detector.cpp						\
 	common/date_utils.cpp						\
 	common/resources.cpp						\
 	common/attributes.cpp						\
 	common/values.cpp						\
 	files/files.cpp							\
 	logging/logging.cpp						\
+	zookeeper/contender.cpp						\
+	zookeeper/detector.cpp						\
 	zookeeper/zookeeper.cpp						\
 	zookeeper/authentication.cpp					\
 	zookeeper/group.cpp						\
@@ -214,15 +218,19 @@ libmesos_no_3rdparty_la_SOURCES += common/attributes.hpp		\
 	common/build.hpp common/date_utils.hpp common/factory.hpp	\
 	common/protobuf_utils.hpp					\
 	common/lock.hpp							\
-	common/type_utils.hpp common/thread.hpp common/units.hpp	\
-	detector/detector.hpp examples/utils.hpp files/files.hpp	\
+	common/type_utils.hpp common/thread.hpp				\
+	examples/utils.hpp files/files.hpp				\
 	hdfs/hdfs.hpp							\
 	launcher/launcher.hpp linux/cgroups.hpp				\
 	linux/fs.hpp local/flags.hpp local/local.hpp			\
 	logging/flags.hpp logging/logging.hpp				\
 	master/allocator.hpp						\
-	master/constants.hpp master/drf_sorter.hpp master/flags.hpp	\
+	master/contender.hpp						\
+	master/constants.hpp						\
+	master/detector.hpp						\
+	master/drf_sorter.hpp master/flags.hpp				\
 	master/hierarchical_allocator_process.hpp			\
+	master/registrar.hpp						\
 	master/master.hpp master/sorter.hpp				\
 	messages/messages.hpp slave/constants.hpp			\
 	slave/flags.hpp slave/gc.hpp slave/monitor.hpp			\
@@ -239,6 +247,8 @@ libmesos_no_3rdparty_la_SOURCES += common/attributes.hpp		\
 	tests/isolator.hpp						\
 	tests/mesos.hpp							\
 	tests/zookeeper_test_server.hpp zookeeper/authentication.hpp	\
+	zookeeper/contender.hpp						\
+	zookeeper/detector.hpp						\
 	zookeeper/group.hpp zookeeper/watcher.hpp			\
 	zookeeper/zookeeper.hpp zookeeper/url.hpp
 
@@ -250,9 +260,27 @@ libmesos_no_3rdparty_la_LIBADD = # Initialized to enable using +=.
 noinst_LTLIBRARIES += libbuild.la
 libbuild_la_SOURCES = common/build.cpp
 libbuild_la_CPPFLAGS = $(AM_CPPFLAGS)
+libbuild_la_CPPFLAGS += $(MESOS_CPPFLAGS)
 libbuild_la_CPPFLAGS += -DBUILD_DATE="\"$$(date '+%Y-%m-%d %H:%M:%S')\""
 libbuild_la_CPPFLAGS += -DBUILD_TIME="\"$$(date '+%s')\""
 libbuild_la_CPPFLAGS += -DBUILD_USER="\"$$USER\""
+
+if GIT_REPO
+    BUILD_GIT_SHA=$$(sh -c 'cd $(top_srcdir); \
+        SHA=`git log -n 1 --format=%H 2> /dev/null` && \
+	echo -DBUILD_GIT_SHA=\"$$SHA\"')
+    libbuild_la_CPPFLAGS += $(BUILD_GIT_SHA)
+
+    BUILD_GIT_BRANCH=$$(sh -c 'cd $(top_srcdir); \
+        BRANCH=`git symbolic-ref HEAD 2> /dev/null` && \
+        echo -DBUILD_GIT_BRANCH=\"$$BRANCH\"')
+    libbuild_la_CPPFLAGS += $(BUILD_GIT_BRANCH)
+
+    BUILD_GIT_TAG=$$(sh -c 'cd $(top_srcdir); \
+        TAG=`git describe --exact --tags 2> /dev/null` && \
+        echo -DBUILD_GIT_TAG=\"$$TAG\"')
+    libbuild_la_CPPFLAGS += $(BUILD_GIT_TAG)
+endif
 
 # We need to escape the build flags properly.
 BUILD_FLAGS = $(echo $(MESOS_CPPFLAGS) $(CPPFLAGS) | sed 's/\"/\\\"/g')	\
@@ -298,7 +326,7 @@ libmesos_no_3rdparty_la_LIBADD += libstate.la
 # The final result!
 lib_LTLIBRARIES += libmesos.la
 
-libmesos_la_SOURCES = $(MESOS_PROTO) # Part of the distribution.
+libmesos_la_SOURCES = $(MESOS_PROTO) # Include as part of the distribution.
 
 libmesos_la_LDFLAGS = -release $(PACKAGE_VERSION) -shared
 
@@ -375,7 +403,20 @@ mesos_resolve_LDADD = libmesos.la
 
 # Need to distribute and install mesos-*.
 dist_bin_SCRIPTS +=							\
-  cli/mesos-ps
+  cli/mesos-cat								\
+  cli/mesos-ps								\
+  cli/mesos-scp								\
+  cli/mesos-tail
+
+# Also install the supporting scripts for the Python based CLI tools.
+# TODO(benh): Use PIP and python/setup.py to do this correctly.
+mesospythonpkglibexecdir = $(pkglibexecdir)/python/mesos
+
+dist_mesospythonpkglibexec_SCRIPTS =					\
+  cli/python/mesos/__init__.py						\
+  cli/python/mesos/cli.py						\
+  cli/python/mesos/futures.py						\
+  cli/python/mesos/http.py
 
 # Need to distribute/install webui javascript. We use 'pkgdatadir'
 # instead of 'datadir' as the install directory so we get the the
@@ -385,7 +426,9 @@ dist_bin_SCRIPTS +=							\
 # 'localstatedir' (e.g., /usr/local/var) is for modifiable "data".
 nobase_dist_pkgdata_DATA +=						\
   webui/master/static/js/controllers.js					\
+  webui/master/static/js/marked.min.js					\
   webui/master/static/js/app.js						\
+  webui/master/static/js/services.js					\
   webui/master/static/js/jquery.pailer.js
 
 # Need to distribute/install webui CSS.
@@ -759,37 +802,38 @@ balloon_executor_LDADD = libmesos.la
 
 check_PROGRAMS += mesos-tests
 
-mesos_tests_SOURCES =			\
-  tests/allocator_tests.cpp		\
-  tests/attributes_tests.cpp		\
-  tests/authentication_tests.cpp	\
-  tests/environment.cpp			\
-  tests/examples_tests.cpp		\
-  tests/exception_tests.cpp		\
-  tests/fault_tolerance_tests.cpp	\
-  tests/files_tests.cpp			\
-  tests/flags.cpp			\
-  tests/gc_tests.cpp			\
-  tests/isolator_tests.cpp		\
-  tests/log_tests.cpp			\
-  tests/logging_tests.cpp		\
-  tests/main.cpp			\
-  tests/master_detector_tests.cpp	\
-  tests/master_tests.cpp		\
-  tests/mesos.cpp			\
-  tests/monitor_tests.cpp		\
-  tests/paths_tests.cpp			\
-  tests/protobuf_io_tests.cpp		\
-  tests/reaper_tests.cpp		\
-  tests/resource_offers_tests.cpp	\
-  tests/resources_tests.cpp		\
-  tests/sasl_tests.cpp			\
-  tests/script.cpp			\
-  tests/slave_recovery_tests.cpp	\
-  tests/sorter_tests.cpp		\
-  tests/state_tests.cpp			\
-  tests/status_update_manager_tests.cpp	\
-  tests/utils.cpp			\
+mesos_tests_SOURCES =				\
+  tests/allocator_tests.cpp			\
+  tests/attributes_tests.cpp			\
+  tests/authentication_tests.cpp		\
+  tests/environment.cpp				\
+  tests/examples_tests.cpp			\
+  tests/exception_tests.cpp			\
+  tests/fault_tolerance_tests.cpp		\
+  tests/files_tests.cpp				\
+  tests/flags.cpp				\
+  tests/gc_tests.cpp				\
+  tests/isolator_tests.cpp			\
+  tests/log_tests.cpp				\
+  tests/logging_tests.cpp			\
+  tests/main.cpp				\
+  tests/master_contender_detector_tests.cpp	\
+  tests/master_tests.cpp			\
+  tests/mesos.cpp				\
+  tests/monitor_tests.cpp			\
+  tests/paths_tests.cpp				\
+  tests/protobuf_io_tests.cpp			\
+  tests/reaper_tests.cpp			\
+  tests/registrar_tests.cpp			\
+  tests/resource_offers_tests.cpp		\
+  tests/resources_tests.cpp			\
+  tests/sasl_tests.cpp				\
+  tests/script.cpp				\
+  tests/slave_recovery_tests.cpp		\
+  tests/sorter_tests.cpp			\
+  tests/state_tests.cpp				\
+  tests/status_update_manager_tests.cpp		\
+  tests/utils.cpp				\
   tests/zookeeper_url_tests.cpp
 
 mesos_tests_CPPFLAGS = $(MESOS_CPPFLAGS)

@@ -116,10 +116,7 @@
     $scope.state = $.parseJSON(data);
 
     // Determine if there is a leader (and redirect if not the leader).
-    if (!$scope.state.leader) {
-      $("#no-leader-alert").show();
-    } else {
-      $("#no-leader-alert").hide();
+    if ($scope.state.leader) {
 
       // Redirect if we aren't the leader.
       if ($scope.state.leader != $scope.state.pid) {
@@ -224,10 +221,18 @@
         if (!task.executor_id) {
           task.executor_id = task.id;
         }
+        if (task.statuses.length > 0) {
+          task.start_time = task.statuses[0].timestamp;
+          task.finish_time = task.statuses[task.statuses.length - 1].timestamp;
+        }
       });
       _.each(framework.completed_tasks, function(task) {
         if (!task.executor_id) {
           task.executor_id = task.id;
+        }
+        if (task.statuses.length > 0) {
+          task.start_time = task.statuses[0].timestamp;
+          task.finish_time = task.statuses[task.statuses.length - 1].timestamp;
         }
       });
     });
@@ -340,8 +345,6 @@
 
     $scope.tables = {};
     $scope.tables['frameworks'] = new Table('id');
-    $scope.tables['slaves'] = new Table('id');
-    $scope.tables['offers'] = new Table('id');
     $scope.tables['completed_frameworks'] = new Table('id');
 
     $scope.columnClass = columnClass($scope);
@@ -369,11 +372,22 @@
 
     $scope.tables = {};
     $scope.tables['frameworks'] = new Table('id');
+    $scope.tables['completed_frameworks'] = new Table('id');
 
     $scope.columnClass = columnClass($scope);
     $scope.selectColumn = selectColumn($scope);
   });
 
+
+  mesosApp.controller('OffersCtrl', function($scope) {
+    setNavbarActiveTab('offers');
+
+    $scope.tables = {};
+    $scope.tables['offers'] = new Table('id');
+
+    $scope.columnClass = columnClass($scope);
+    $scope.selectColumn = selectColumn($scope);
+  });
 
   mesosApp.controller('FrameworkCtrl', function($scope, $routeParams) {
     setNavbarActiveTab('frameworks');
@@ -732,30 +746,51 @@
   // TODO(ssorallen): Add `executor.directory` to the state.json output so this
   // controller of rerouting is no longer necessary.
   mesosApp.controller('SlaveExecutorRerouterCtrl',
-      function($http, $location, $routeParams, $scope, $window) {
+      function($alert, $http, $location, $routeParams, $scope, $window) {
 
-    var pid = $scope.slaves[$routeParams.slave_id].pid;
+    function goBack(flashMessageOrOptions) {
+      if (flashMessageOrOptions) {
+        $alert.danger(flashMessageOrOptions);
+      }
+
+      if ($window.history.length > 1) {
+        // If the browser has something in its history, just go back.
+        $window.history.back();
+      } else {
+        // Otherwise navigate to the framework page, which is likely the
+        // previous page anyway.
+        $location.path('/frameworks/' + $routeParams.framework_id).replace();
+      }
+    }
+
+    // When navigating directly to this page, e.g. pasting the URL into the
+    // browser, the previous page is not a page in Mesos. In that case, navigate
+    // home.
+    if (!$scope.slaves) {
+      $alert.danger({
+        message: "Navigate to the slave's sandbox via the Mesos UI.",
+        title: "Failed to find slaves."
+      });
+      return $location.path('/').replace();
+    }
+
+    var slave = $scope.slaves[$routeParams.slave_id];
+
+    // If the slave doesn't exist, send the user back.
+    if (!slave) {
+      return goBack("Slave with ID '" + $routeParams.slave_id + "' does not exist.");
+    }
+
+    var pid = slave.pid;
     var hostname = $scope.slaves[$routeParams.slave_id].hostname;
     var id = pid.substring(0, pid.indexOf('@'));
-    var host = hostname + ":" + pid.substring(pid.lastIndexOf(':') + 1);
+    var port = pid.substring(pid.lastIndexOf(':') + 1);
+    var host = hostname + ":" + port;
 
     // Request slave details to get access to the route executor's "directory"
     // to navigate directly to the executor's sandbox.
     $http.jsonp('http://' + host + '/' + id + '/state.json?jsonp=JSON_CALLBACK')
       .success(function(response) {
-
-        // TODO(ssorallen): Add error messaging on the following pageview should
-        // an error cause this function to be called.
-        function goBack() {
-          if ($window.history.length > 1) {
-            // If the browser has something in its history, just go back.
-            $window.history.back();
-          } else {
-            // Otherwise navigate to the framework page, which is likely the
-            // previous page anyway.
-            $location.path('/frameworks/' + $routeParams.framework_id).replace();
-          }
-        }
 
         function matchFramework(framework) {
           return $routeParams.framework_id === framework.id;
@@ -766,7 +801,11 @@
           _.find(response.completed_frameworks, matchFramework);
 
         if (!framework) {
-          return goBack();
+          return goBack(
+            "Framework with ID '" + $routeParams.framework_id +
+              "' does not exist on slave with ID '" + $routeParams.slave_id +
+              "'."
+          );
         }
 
         function matchExecutor(executor) {
@@ -778,7 +817,11 @@
           _.find(framework.completed_executors, matchExecutor);
 
         if (!executor) {
-          return goBack();
+          return goBack(
+            "Executor with ID '" + $routeParams.executor_id +
+              "' does not exist on slave with ID '" + $routeParams.slave_id +
+              "'."
+          );
         }
 
         // Navigate to a path like '/slaves/:id/browse?path=%2Ftmp%2F', the
@@ -788,6 +831,17 @@
           .replace();
       })
       .error(function(response) {
+        $alert.danger({
+          bullets: [
+            "The slave's hostname, '" + hostname + "', is not accessible from your network",
+            "The slave's port, '" + port + "', is not accessible from your network",
+            "The slave timed out or went offline"
+          ],
+          message: "Potential reasons:",
+          title: "Failed to connect to slave '" + $routeParams.slave_id +
+            "' on '" + host + "'."
+        });
+
         // Is the slave dead? Navigate home since returning to the slave might
         // end up in an endless loop.
         $location.path('/').replace();

@@ -40,6 +40,7 @@ namespace mesos {
 class SchedulerDriver;
 
 namespace internal {
+class MasterDetector;
 class SchedulerProcess;
 }
 
@@ -253,7 +254,8 @@ public:
    * Kills the specified task. Note that attempting to kill a task is
    * currently not reliable. If, for example, a scheduler fails over
    * while it was attempting to kill a task it will need to retry in
-   * the future (these semantics may be changed in the future).
+   * the future. Likewise, if unregistered / disconnected, the request
+   * will be dropped (these semantics may be changed in the future).
    */
   virtual Status killTask(const TaskID& taskId) = 0;
 
@@ -385,8 +387,11 @@ private:
   FrameworkInfo framework;
   std::string master;
 
-  // Libprocess process for communicating with master.
+  // Used for communicating with the master.
   internal::SchedulerProcess* process;
+
+  // URL for the master (e.g., zk://, file://, etc).
+  std::string url;
 
   // Mutex to enforce all non-callbacks are execute serially.
   pthread_mutex_t mutex;
@@ -396,6 +401,12 @@ private:
 
   // Current status of the driver.
   Status status;
+
+  const Credential* credential;
+
+protected:
+  // Used to detect (i.e., choose) the master.
+  internal::MasterDetector* detector;
 };
 
 } // namespace mesos {

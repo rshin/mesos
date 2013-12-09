@@ -107,7 +107,9 @@ public:
                   bool _local,
                   const string& _directory,
                   bool _checkpoint,
-                  Duration _recoveryTimeout)
+                  Duration _recoveryTimeout,
+                  pthread_mutex_t* _mutex,
+                  pthread_cond_t* _cond)
     : ProcessBase(ID::generate("executor")),
       slave(_slave),
       driver(_driver),
@@ -119,6 +121,8 @@ public:
       connection(UUID::random()),
       local(_local),
       aborted(false),
+      mutex(_mutex),
+      cond(_cond),
       directory(_directory),
       checkpoint(_checkpoint),
       recoveryTimeout(_recoveryTimeout)
@@ -392,10 +396,21 @@ protected:
     }
   }
 
+  void stop()
+  {
+    terminate(self());
+
+    Lock lock(mutex);
+    pthread_cond_signal(cond);
+  }
+
   void abort()
   {
     VLOG(1) << "De-activating the executor libprocess";
-    aborted = true;
+    CHECK(aborted);
+
+    Lock lock(mutex);
+    pthread_cond_signal(cond);
   }
 
   void _recoveryTimeout(UUID _connection)
@@ -495,6 +510,7 @@ protected:
     update->mutable_slave_id()->MergeFrom(slaveId);
     update->mutable_status()->MergeFrom(status);
     update->set_timestamp(Clock::now().secs());
+    update->mutable_status()->set_timestamp(update->timestamp());
     update->set_uuid(UUID::random().toBytes());
     message.set_pid(self());
 
@@ -532,7 +548,9 @@ private:
   bool connected; // Registered with the slave.
   UUID connection; // UUID to identify the connection instance.
   bool local;
-  bool aborted;
+  volatile bool aborted;
+  pthread_mutex_t* mutex;
+  pthread_cond_t* cond;
   const string directory;
   bool checkpoint;
   Duration recoveryTimeout;
@@ -684,7 +702,9 @@ Status MesosExecutorDriver::start()
       local,
       workDirectory,
       checkpoint,
-      recoveryTimeout);
+      recoveryTimeout,
+      &mutex,
+      &cond);
 
   spawn(process);
 
@@ -702,13 +722,7 @@ Status MesosExecutorDriver::stop()
 
   CHECK(process != NULL);
 
-  terminate(process);
-
-  // TODO(benh): Set the condition variable in ExecutorProcess just as
-  // we do with the MesosSchedulerDriver and SchedulerProcess:
-  // dispatch(process, &ExecutorProcess::stop);
-
-  pthread_cond_signal(&cond);
+  dispatch(process, &ExecutorProcess::stop);
 
   bool aborted = status == DRIVER_ABORTED;
 
@@ -728,12 +742,17 @@ Status MesosExecutorDriver::abort()
 
   CHECK(process != NULL);
 
-  // TODO(benh): Set the condition variable in ExecutorProcess just as
-  // we do with the MesosSchedulerDriver and SchedulerProcess.
+  // We set the volatile aborted to true here to prevent any further
+  // messages from being processed in the ExecutorProcess. However,
+  // if abort() is called from another thread as the ExecutorProcess,
+  // there may be at most one additional message processed.
+  // TODO(bmahler): Use an atomic boolean.
+  process->aborted = true;
 
+  // Dispatching here ensures that we still process the outstanding
+  // requests *from* the executor, since those do proceed when
+  // aborted is true.
   dispatch(process, &ExecutorProcess::abort);
-
-  pthread_cond_signal(&cond);
 
   return status = DRIVER_ABORTED;
 }

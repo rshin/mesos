@@ -136,9 +136,15 @@ namespace ID {
 string generate(const string& prefix)
 {
   static map<string, int> prefixes;
-  stringstream out;
-  out << __sync_add_and_fetch(&prefixes[prefix], 1);
-  return prefix + "(" + out.str() + ")";
+  static synchronizable(prefixes) = SYNCHRONIZED_INITIALIZER;
+
+  int id;
+  synchronized (prefixes) {
+    int& _id = prefixes[prefix];
+    _id += 1;
+    id = _id;
+  }
+  return prefix + "(" + stringify(id) + ")";
 }
 
 } // namespace ID {
@@ -1358,7 +1364,16 @@ void initialize(const string& delegate)
   socket_manager = new SocketManager();
 
   // Setup processing threads.
-  long cpus = std::max(4L, sysconf(_SC_NPROCESSORS_ONLN));
+  // We create no fewer than 8 threads because some tests require
+  // more worker threads than 'sysconf(_SC_NPROCESSORS_ONLN)' on
+  // computers with fewer cores.
+  // e.g. https://issues.apache.org/jira/browse/MESOS-818
+  //
+  // TODO(xujyan): Use a smarter algorithm to allocate threads.
+  // Allocating a static number of threads can cause starvation if
+  // there are more waiting Processes than the number of worker
+  // threads.
+  long cpus = std::max(8L, sysconf(_SC_NPROCESSORS_ONLN));
 
   for (int i = 0; i < cpus; i++) {
     pthread_t thread; // For now, not saving handles on our threads.
@@ -2983,7 +2998,7 @@ Timer Timer::create(
     const Duration& duration,
     const lambda::function<void(void)>& thunk)
 {
-  static uint64_t id = 1; // Start at 1 since Timer() instances start with 0.
+  static uint64_t id = 1; // Start at 1 since Timer() instances use id 0.
 
   // Assumes Clock::now() does Clock::now(__process__).
   Timeout timeout = Timeout::in(duration);
@@ -3020,8 +3035,6 @@ bool Timer::cancel(const Timer& timer)
     // Check if the timeout is still pending, and if so, erase it. In
     // addition, erase an empty list if we just removed the last
     // timeout.
-    // TODO(benh): If two timers are created with the same timeout,
-    // this will erase *both*. Fix this!
     Time time = timer.timeout().time();
     if (timeouts->count(time) > 0) {
       canceled = true;
@@ -3590,8 +3603,7 @@ Future<Response> decode(const string& buffer)
     for (size_t i = 0; i < responses.size(); ++i) {
       delete responses[i];
     }
-    return Future<Response>::failed(
-        "Failed to decode HTTP response:\n" + buffer + "\n");
+    return Failure("Failed to decode HTTP response:\n" + buffer + "\n");
   } else if (responses.size() > 1) {
     PLOG(ERROR) << "Received more than 1 HTTP Response";
   }
@@ -3612,13 +3624,12 @@ Future<Response> get(const UPID& upid, const string& path, const string& query)
   int s = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
 
   if (s < 0) {
-    return Future<Response>::failed(
-        string("Failed to create socket: ") + strerror(errno));
+    return Failure(string("Failed to create socket: ") + strerror(errno));
   }
 
   Try<Nothing> cloexec = os::cloexec(s);
   if (!cloexec.isSome()) {
-    return Future<Response>::failed("Failed to cloexec: " + cloexec.error());
+    return Failure("Failed to cloexec: " + cloexec.error());
   }
 
   sockaddr_in addr;
@@ -3629,8 +3640,7 @@ Future<Response> get(const UPID& upid, const string& path, const string& query)
 
   if (connect(s, (sockaddr*) &addr, sizeof(addr)) < 0) {
     os::close(s);
-    return Future<Response>::failed(
-        string("Failed to connect: ") + strerror(errno));
+    return Failure(string("Failed to connect: ") + strerror(errno));
   }
 
   std::ostringstream out;
@@ -3661,8 +3671,7 @@ Future<Response> get(const UPID& upid, const string& path, const string& query)
         continue;
       }
       os::close(s);
-      return Future<Response>::failed(
-          string("Failed to write: ") + strerror(errno));
+      return Failure(string("Failed to write: ") + strerror(errno));
     }
 
     remaining -= n;
@@ -3671,8 +3680,7 @@ Future<Response> get(const UPID& upid, const string& path, const string& query)
   Try<Nothing> nonblock = os::nonblock(s);
   if (!nonblock.isSome()) {
     os::close(s);
-    return Future<Response>::failed(
-        "Failed to set nonblock: " + nonblock.error());
+    return Failure("Failed to set nonblock: " + nonblock.error());
   }
 
   // Decode once the async read completes.

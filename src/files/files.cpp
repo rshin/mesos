@@ -113,19 +113,22 @@ void FilesProcess::initialize()
 
 Future<Nothing> FilesProcess::attach(const string& path, const string& name)
 {
-  Try<string> result = os::realpath(path);
+  Result<string> result = os::realpath(path);
 
-  if (result.isError()) {
-    return Future<Nothing>::failed(
-        "Failed to get realpath of '" + path + "': " + result.error());
+  if (!result.isSome()) {
+    return Failure(
+        "Failed to get realpath of '" + path + "': " +
+        (result.isError()
+         ? result.error()
+         : "No such file or directory"));
   }
 
   // Make sure we have permissions to read the file/dir.
   Try<bool> access = os::access(result.get(), R_OK);
 
   if (access.isError() || !access.get()) {
-    return Future<Nothing>::failed("Failed to access '" + path + "': " +
-        (access.isError() ? access.error() : "Access denied"));
+    return Failure("Failed to access '" + path + "': " +
+                   (access.isError() ? access.error() : "Access denied"));
   }
 
   // To simplify the read/browse logic, strip any trailing / from the name.
@@ -409,11 +412,13 @@ Result<string> FilesProcess::resolve(const string& path)
       path = path::join(path, suffix);
 
       // Canonicalize the absolute path.
-      Try<string> realpath = os::realpath(path);
+      Result<string> realpath = os::realpath(path);
       if (realpath.isError()) {
         return Error(
             "Failed to determine canonical path of '" + path +
             "': " + realpath.error());
+      } else if (realpath.isNone()) {
+        return None();
       }
 
       // Make sure the canonicalized absolute path is accessible

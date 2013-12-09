@@ -28,6 +28,7 @@
 
 #include <process/dispatch.hpp>
 #include <process/gmock.hpp>
+#include <process/owned.hpp>
 
 #include <stout/none.hpp>
 #include <stout/numify.hpp>
@@ -38,12 +39,11 @@
 
 #include "common/protobuf_utils.hpp"
 
-#include "detector/detector.hpp"
-
 #ifdef __linux__
 #include "linux/cgroups.hpp"
 #endif
 
+#include "master/detector.hpp"
 #include "master/master.hpp"
 
 #include "slave/gc.hpp"
@@ -97,7 +97,7 @@ TEST_F(SlaveStateTest, CheckpointProtobuf)
   expected.set_value("slave1");
 
   const string& file = "slave.id";
-  state::checkpoint(file, expected);
+  slave::state::checkpoint(file, expected);
 
   const Result<SlaveID>& actual = ::protobuf::read<SlaveID>(file);
   ASSERT_SOME(actual);
@@ -111,7 +111,7 @@ TEST_F(SlaveStateTest, CheckpointString)
   // Checkpoint a test string.
   const string expected = "test";
   const string file = "test-file";
-  state::checkpoint(file, expected);
+  slave::state::checkpoint(file, expected);
 
   ASSERT_SOME_EQ(expected, os::read(file));
 }
@@ -228,12 +228,12 @@ TYPED_TEST(SlaveRecoveryTest, RecoverSlaveState)
   AWAIT_READY(_ack);
 
   // Recover the state.
-  Result<state::SlaveState> recover = state::recover(
+  Result<slave::state::SlaveState> recover = slave::state::recover(
       paths::getMetaRootDir(flags.work_dir), true);
 
   ASSERT_SOME(recover);
 
-  state::SlaveState state = recover.get();
+  slave::state::SlaveState state = recover.get();
 
   // Check slave id.
   ASSERT_EQ(slaveId, state.id);
@@ -1502,9 +1502,10 @@ TYPED_TEST(SlaveRecoveryTest, ShutdownSlave)
   EXPECT_CALL(sched, registered(_, _, _));
 
   Future<vector<Offer> > offers1;
+  Future<vector<Offer> > offers2;
   EXPECT_CALL(sched, resourceOffers(_, _))
-    .WillOnce(FutureArg<1>(&offers1))
-    .WillOnce(Return());       // Ignore the offer when slave is shutting down.
+    .WillOnce(FutureArg<1>(&offers1))  // Initial offer.
+    .WillOnce(FutureArg<1>(&offers2)); // Task resources re-offered.
 
   driver.start();
 
@@ -1551,14 +1552,15 @@ TYPED_TEST(SlaveRecoveryTest, ShutdownSlave)
   }
 
   AWAIT_READY(executorTerminated);
+  AWAIT_READY(offers2);
 
   Clock::resume();
 
   this->Stop(slave.get(), true); // Send a "shut down".
 
-  Future<vector<Offer> > offers2;
+  Future<vector<Offer> > offers3;
   EXPECT_CALL(sched, resourceOffers(_, _))
-    .WillOnce(FutureArg<1>(&offers2))
+    .WillOnce(FutureArg<1>(&offers3))
     .WillRepeatedly(Return());        // Ignore subsequent offers.
 
   // Now restart the slave (use same flags) with a new isolator.
@@ -1568,16 +1570,16 @@ TYPED_TEST(SlaveRecoveryTest, ShutdownSlave)
   ASSERT_SOME(slave);
 
   // Ensure that the slave registered with a new id.
-  AWAIT_READY(offers2);
+  AWAIT_READY(offers3);
 
-  EXPECT_NE(0u, offers2.get().size());
+  EXPECT_NE(0u, offers3.get().size());
   // Make sure all slave resources are reoffered.
   ASSERT_EQ(Resources(offers1.get()[0].resources()),
-            Resources(offers2.get()[0].resources()));
+            Resources(offers3.get()[0].resources()));
 
   // Ensure the slave id is different.
   ASSERT_NE(
-      offers1.get()[0].slave_id().value(), offers2.get()[0].slave_id().value());
+      offers1.get()[0].slave_id().value(), offers3.get()[0].slave_id().value());
 
   driver.stop();
   driver.join();
@@ -2003,6 +2005,16 @@ TYPED_TEST(SlaveRecoveryTest, ReconcileTasksMissingFromSlave)
 
   Clock::resume();
 
+  EXPECT_CALL(allocator, frameworkDeactivated(_))
+    .WillRepeatedly(Return());
+  EXPECT_CALL(allocator, frameworkRemoved(_))
+    .WillRepeatedly(Return());
+
+  // If there was an outstanding offer, we can get a call to
+  // resourcesRecovered when we stop the scheduler.
+  EXPECT_CALL(allocator, resourcesRecovered(_, _, _))
+    .WillRepeatedly(Return());
+
   driver.stop();
   driver.join();
 
@@ -2311,8 +2323,10 @@ TYPED_TEST(SlaveRecoveryTest, MasterFailover)
   frameworkInfo.CopyFrom(DEFAULT_FRAMEWORK_INFO);
   frameworkInfo.set_checkpoint(true);
 
-  MesosSchedulerDriver driver(
-      &sched, frameworkInfo, master.get(), DEFAULT_CREDENTIAL);
+  Owned<StandaloneMasterDetector> detector(
+      new StandaloneMasterDetector(master.get()));
+  TestingMesosSchedulerDriver driver(
+      &sched, frameworkInfo, DEFAULT_CREDENTIAL, detector.get());
 
   EXPECT_CALL(sched, registered(_, _, _));
 
@@ -2356,11 +2370,8 @@ TYPED_TEST(SlaveRecoveryTest, MasterFailover)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureSatisfy(&registered));
 
-  // Simulate a new master detected message to the scheduler.
-  NewMasterDetectedMessage newMasterDetectedMsg;
-  newMasterDetectedMsg.set_pid(master.get());
-
-  process::post(frameworkRegisteredMessage.get().to, newMasterDetectedMsg);
+  // Simulate a new master detected event to the scheduler.
+  detector->appoint(master.get());
 
   // Framework should get a registered callback.
   AWAIT_READY(registered);

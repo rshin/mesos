@@ -38,6 +38,7 @@
 #include "common/attributes.hpp"
 #include "common/build.hpp"
 #include "common/type_utils.hpp"
+#include "common/protobuf_utils.hpp"
 
 #include "logging/logging.hpp"
 
@@ -121,6 +122,17 @@ JSON::Object model(const Attributes& attributes)
 }
 
 
+// Returns a JSON object modeled on a TaskStatus.
+JSON::Object model(const TaskStatus& status)
+{
+  JSON::Object object;
+  object.values["state"] = TaskState_Name(status.state());
+  object.values["timestamp"] = status.timestamp();
+
+  return object;
+}
+
+
 // Returns a JSON object modeled on a Task.
 // TODO(bmahler): Expose the executor name / source.
 JSON::Object model(const Task& task)
@@ -133,6 +145,13 @@ JSON::Object model(const Task& task)
   object.values["slave_id"] = task.slave_id().value();
   object.values["state"] = TaskState_Name(task.state());
   object.values["resources"] = model(task.resources());
+
+  JSON::Array array;
+  foreach (const TaskStatus& status, task.statuses()) {
+    array.values.push_back(model(status));
+  }
+  object.values["statuses"] = array;
+
   return object;
 }
 
@@ -279,7 +298,7 @@ Future<Response> Master::Http::redirect(const Request& request)
   LOG(INFO) << "HTTP request for '" << request.path << "'";
 
   // If there's no leader, redirect to this master's base url.
-  UPID pid = master.leader != UPID() ? master.leader : master.self();
+  UPID pid = master.leader.isSome() ? master.leader.get() : master.self();
 
   Try<string> hostname = net::getHostname(pid.ip);
   if (hostname.isError()) {
@@ -297,7 +316,7 @@ Future<Response> Master::Http::stats(const Request& request)
 
   JSON::Object object;
   object.values["uptime"] = (Clock::now() - master.startTime).secs();
-  object.values["elected"] = master.elected; // Note: using int not bool.
+  object.values["elected"] = master.elected(); // Note: using int not bool.
   object.values["total_schedulers"] = master.frameworks.size();
   object.values["active_schedulers"] = master.getActiveFrameworks().size();
   object.values["activated_slaves"] = master.slaves.size();
@@ -355,6 +374,19 @@ Future<Response> Master::Http::state(const Request& request)
 
   JSON::Object object;
   object.values["version"] = MESOS_VERSION;
+
+  if (build::GIT_SHA.isSome()) {
+    object.values["git_sha"] = build::GIT_SHA.get();
+  }
+
+  if (build::GIT_BRANCH.isSome()) {
+    object.values["git_branch"] = build::GIT_BRANCH.get();
+  }
+
+  if (build::GIT_TAG.isSome()) {
+    object.values["git_tag"] = build::GIT_TAG.get();
+  }
+
   object.values["build_date"] = build::DATE;
   object.values["build_time"] = build::TIME;
   object.values["build_user"] = build::USER;
@@ -374,14 +406,22 @@ Future<Response> Master::Http::state(const Request& request)
     object.values["cluster"] = master.flags.cluster.get();
   }
 
-  // TODO(benh): Use an Option for the leader PID.
-  if (master.leader != UPID()) {
-    object.values["leader"] = string(master.leader);
+  if (master.leader.isSome()) {
+    object.values["leader"] = string(master.leader.get());
   }
 
   if (master.flags.log_dir.isSome()) {
     object.values["log_dir"] = master.flags.log_dir.get();
   }
+
+  JSON::Object flags;
+  foreachpair (const string& name, const flags::Flag& flag, master.flags) {
+    Option<string> value = flag.stringify(master.flags);
+    if (value.isSome()) {
+      flags.values[name] = value.get();
+    }
+  }
+  object.values["flags"] = flags;
 
   // Model all of the slaves.
   {
@@ -437,6 +477,106 @@ Future<Response> Master::Http::roles(const Request& request)
 
   return OK(object, request.query.get("jsonp"));
 }
+
+
+const string Master::Http::TASKS_HELP = HELP(
+    TLDR(
+      "Lists tasks from all active frameworks."),
+    USAGE(
+      "/master/tasks.json"),
+    DESCRIPTION(
+      "Lists known tasks.",
+      "",
+      "Query parameters:",
+      "",
+      ">        limit=VALUE          Maximum number of tasks returned "
+      "(default is " + stringify(TASK_LIMIT) + ").",
+      ">        offset=VALUE         Starts task list at offset.",
+      ">        order=(asc|desc)     Ascending or descending sort order "
+      "(default is descending)."
+      ""));
+
+
+struct TaskComparator
+{
+  static bool ascending(const Task* lhs, const Task* rhs)
+  {
+    if (lhs->statuses().size() == 0) {
+      return true;
+    }
+
+    if (rhs->statuses().size() == 0) {
+      return false;
+    }
+
+    return (lhs->statuses(0).timestamp() < rhs->statuses(0).timestamp());
+  }
+
+  static bool descending(const Task* lhs, const Task* rhs)
+  {
+    return !ascending(lhs, rhs);
+  }
+};
+
+
+Future<Response> Master::Http::tasks(const Request& request)
+{
+  LOG(INFO) << "HTTP request for '" << request.path << "'";
+
+  // Get list options (limit and offset).
+  Result<int> result = numify<int>(request.query.get("limit"));
+  size_t limit = result.isSome() ? result.get() : TASK_LIMIT;
+
+  result = numify<int>(request.query.get("offset"));
+  size_t offset = result.isSome() ? result.get() : 0;
+
+  // TODO(nnielsen): Currently, formatting errors in offset and/or limit
+  // will silently be ignored. This could be reported to the user instead.
+
+  // Construct framework list with both active and completed framwworks.
+  vector<const Framework*> frameworks;
+  foreachvalue (Framework* framework, master.frameworks) {
+    frameworks.push_back(framework);
+  }
+  foreach (const std::tr1::shared_ptr<Framework>& framework,
+           master.completedFrameworks) {
+    frameworks.push_back(framework.get());
+  }
+
+  // Construct task list with both running and finished tasks.
+  vector<const Task*> tasks;
+  foreach (const Framework* framework, frameworks) {
+    foreachvalue (Task* task, framework->tasks) {
+      CHECK_NOTNULL(task);
+      tasks.push_back(task);
+    }
+    foreach (const Task& task, framework->completedTasks) {
+      tasks.push_back(&task);
+    }
+  }
+
+  // Sort tasks by task status timestamp. Default order is descending.
+  // The earlist timestamp is chosen for comparison when multiple are present.
+  Option<string> order = request.query.get("order");
+  if (order.isSome() && (order.get() == "asc")) {
+    sort(tasks.begin(), tasks.end(), TaskComparator::ascending);
+  } else {
+    sort(tasks.begin(), tasks.end(), TaskComparator::descending);
+  }
+
+  JSON::Array array;
+  size_t end = std::min(offset + limit, tasks.size());
+  for (size_t i = offset; i < end; i++) {
+    const Task* task = tasks[i];
+    array.values.push_back(model(*task));
+  }
+
+  JSON::Object object;
+  object.values["tasks"] = array;
+
+  return OK(object, request.query.get("jsonp"));
+}
+
 
 } // namespace master {
 } // namespace internal {

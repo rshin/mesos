@@ -39,17 +39,11 @@ namespace master {
 // Maximum number of slot offers to have outstanding for each framework.
 extern const int MAX_OFFERS_PER_FRAMEWORK;
 
-// Minimum number of cpus / task.
-extern const uint32_t MIN_CPUS;
+// Minimum number of cpus per offer.
+extern const double MIN_CPUS;
 
-// Minimum amount of memory / task.
-extern const uint32_t MIN_MEM;
-
-// Maximum number of CPUs per machine.
-extern const uint32_t MAX_CPUS;
-
-// Maximum amount of memory / machine.
-extern const uint32_t MAX_MEM;
+// Minimum amount of memory per offer.
+extern const Bytes MIN_MEM;
 
 // Amount of time within which a slave PING should be received.
 extern const Duration SLAVE_PING_TIMEOUT;
@@ -67,6 +61,9 @@ extern const uint32_t MAX_COMPLETED_TASKS_PER_FRAMEWORK;
 
 // Time interval to check for updated watchers list.
 extern const Duration WHITELIST_WATCH_INTERVAL;
+
+// Default number of tasks (limit) for /master/tasks.json endpoint
+extern const uint32_t TASK_LIMIT;
 
 } // namespace mesos {
 } // namespace internal {

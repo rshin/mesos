@@ -27,6 +27,6 @@ message Slave {
 }
 
 
-message Registry {
+message Slaves {
   repeated Slave slaves = 1;
 }

@@ -1,15 +1,22 @@
 #ifndef __ZOOKEEPER_GROUP_HPP__
 #define __ZOOKEEPER_GROUP_HPP__
 
+#include <map>
 #include <set>
 
 #include "process/future.hpp"
+#include "process/timer.hpp"
 
 #include <stout/duration.hpp>
 #include <stout/none.hpp>
 #include <stout/option.hpp>
 
 #include "zookeeper/authentication.hpp"
+#include "zookeeper/url.hpp"
+
+// Forward declarations.
+class Watcher;
+class ZooKeeper;
 
 namespace zookeeper {
 
@@ -34,6 +41,11 @@ public:
       return sequence == that.sequence;
     }
 
+    bool operator != (const Membership& that) const
+    {
+      return sequence != that.sequence;
+    }
+
     bool operator < (const Membership& that) const
     {
       return sequence < that.sequence;
@@ -54,7 +66,7 @@ public:
       return sequence >= that.sequence;
     }
 
-    uint64_t id() const
+    int32_t id() const
     {
       return sequence;
     }
@@ -73,10 +85,10 @@ public:
   private:
     friend class GroupProcess; // Creates and manages memberships.
 
-    Membership(uint64_t _sequence, const process::Future<bool>& cancelled)
+    Membership(int32_t _sequence, const process::Future<bool>& cancelled)
       : sequence(_sequence), cancelled_(cancelled) {}
 
-    uint64_t sequence;
+    const int32_t sequence;
     process::Future<bool> cancelled_;
   };
 
@@ -86,6 +98,9 @@ public:
         const Duration& timeout,
         const std::string& znode,
         const Option<Authentication>& auth = None());
+  Group(const URL& url,
+        const Duration& timeout);
+
   ~Group();
 
   // Returns the result of trying to join a "group" in ZooKeeper. If
@@ -113,8 +128,156 @@ public:
   // or none if no session currently exists.
   process::Future<Option<int64_t> > session();
 
-private:
+  // Made public for testing purposes.
   GroupProcess* process;
+};
+
+
+class GroupProcess : public process::Process<GroupProcess>
+{
+public:
+  GroupProcess(const std::string& servers,
+               const Duration& timeout,
+               const std::string& znode,
+               const Option<Authentication>& auth);
+
+  GroupProcess(const URL& url,
+               const Duration& timeout);
+
+  virtual ~GroupProcess();
+
+  virtual void initialize();
+
+  static const Duration RETRY_INTERVAL;
+
+  // Group implementation.
+  process::Future<Group::Membership> join(const std::string& data);
+  process::Future<bool> cancel(const Group::Membership& membership);
+  process::Future<std::string> data(const Group::Membership& membership);
+  process::Future<std::set<Group::Membership> > watch(
+      const std::set<Group::Membership>& expected);
+  process::Future<Option<int64_t> > session();
+
+  // ZooKeeper events.
+  void connected(bool reconnect);
+  void reconnecting();
+  void expired();
+  void updated(const std::string& path);
+  void created(const std::string& path);
+  void deleted(const std::string& path);
+
+private:
+  Result<Group::Membership> doJoin(const std::string& data);
+  Result<bool> doCancel(const Group::Membership& membership);
+  Result<std::string> doData(const Group::Membership& membership);
+
+  // Returns true if authentication is successful, false if the
+  // failure is retryable and Error otherwise.
+  Try<bool> authenticate();
+
+  // Creates the group (which means creating its base path) on ZK.
+  // Returns true if successful, false if the failure is retryable
+  // and Error otherwise.
+  Try<bool> create();
+
+  // Attempts to cache the current set of memberships.
+  // Returns true if successful, false if the failure is retryable
+  // and Error otherwise.
+  Try<bool> cache();
+
+  // Synchronizes pending operations with ZooKeeper and also attempts
+  // to cache the current set of memberships if necessary.
+  // Returns true if successful, false if the failure is retryable
+  // and Error otherwise.
+  Try<bool> sync();
+
+  // Updates any pending watches.
+  void update();
+
+  // Generic retry method. This mechanism is "generic" in the sense
+  // that it is not specific to any particular operation, but rather
+  // attempts to perform all pending operations (including caching
+  // memberships if necessary).
+  void retry(const Duration& duration);
+
+  // Fails all pending operations.
+  void abort(const std::string& error);
+
+  void timedout(const int64_t& sessionId);
+
+  const std::string servers;
+  const Duration timeout;
+  const std::string znode;
+
+  Option<Authentication> auth; // ZooKeeper authentication.
+
+  const ACL_vector acl; // Default ACL to use.
+
+  Watcher* watcher;
+  ZooKeeper* zk;
+
+  enum State {     // Group connection state.
+    CONNECTING,    // ZooKeeper connecting.
+    CONNECTED,     // ZooKeeper connected but before group setup.
+    AUTHENTICATED, // ZooKeeper connected and authenticated.
+    READY,         // ZooKeeper connected, session authenticated and
+                   // base path for the group created.
+  } state;
+
+  struct Join
+  {
+    Join(const std::string& _data) : data(_data) {}
+    std::string data;
+    process::Promise<Group::Membership> promise;
+  };
+
+  struct Cancel
+  {
+    Cancel(const Group::Membership& _membership)
+      : membership(_membership) {}
+    Group::Membership membership;
+    process::Promise<bool> promise;
+  };
+
+  struct Data
+  {
+    Data(const Group::Membership& _membership)
+      : membership(_membership) {}
+    Group::Membership membership;
+    process::Promise<std::string> promise;
+  };
+
+  struct Watch
+  {
+    Watch(const std::set<Group::Membership>& _expected)
+      : expected(_expected) {}
+    std::set<Group::Membership> expected;
+    process::Promise<std::set<Group::Membership> > promise;
+  };
+
+  struct {
+    std::queue<Join*> joins;
+    std::queue<Cancel*> cancels;
+    std::queue<Data*> datas;
+    std::queue<Watch*> watches;
+  } pending;
+
+  // Indicates there is a pending delayed retry.
+  bool retrying;
+
+  // Expected ZooKeeper sequence numbers (either owned/created by this
+  // group instance or not) and the promise we associate with their
+  // "cancellation" (i.e., no longer part of the group).
+  std::map<int32_t, process::Promise<bool>*> owned;
+  std::map<int32_t, process::Promise<bool>*> unowned;
+
+  // Cache of owned + unowned, where 'None' represents an invalid
+  // cache and 'Some' represents a valid cache.
+  Option<std::set<Group::Membership> > memberships;
+
+  // The timer that determines whether we should quit waiting for the
+  // connection to be restored.
+  Option<process::Timer> timer;
 };
 
 } // namespace zookeeper {

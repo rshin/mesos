@@ -336,12 +336,12 @@ inline Try<std::string> basename(const std::string& path)
   char* temp = new char[path.size() + 1];
   char* result = ::basename(::strcpy(temp, path.c_str()));
   if (result == NULL) {
-    delete temp;
+    delete[] temp;
     return ErrnoError();
   }
 
   std::string s(result);
-  delete temp;
+  delete[] temp;
   return s;
 }
 
@@ -351,20 +351,23 @@ inline Try<std::string> dirname(const std::string& path)
   char* temp = new char[path.size() + 1];
   char* result = ::dirname(::strcpy(temp, path.c_str()));
   if (result == NULL) {
-    delete temp;
+    delete[] temp;
     return ErrnoError();
   }
 
   std::string s(result);
-  delete temp;
+  delete[] temp;
   return s;
 }
 
 
-inline Try<std::string> realpath(const std::string& path)
+inline Result<std::string> realpath(const std::string& path)
 {
   char temp[PATH_MAX];
   if (::realpath(path.c_str(), temp) == NULL) {
+    if (errno == ENOENT || errno == ENOTDIR) {
+      return None();
+    }
     return ErrnoError();
   }
   return std::string(temp);
@@ -453,10 +456,10 @@ inline Try<std::string> mkdtemp(const std::string& path = "/tmp/XXXXXX")
   char* temp = new char[path.size() + 1];
   if (::mkdtemp(::strcpy(temp, path.c_str())) != NULL) {
     std::string result(temp);
-    delete temp;
+    delete[] temp;
     return result;
   } else {
-    delete temp;
+    delete[] temp;
     return ErrnoError();
   }
 }
@@ -701,7 +704,7 @@ inline Try<std::string> hostname()
 
   std::string hostname = hep->h_name;
   delete[] temp;
-  return Try<std::string>::some(hostname);
+  return hostname;
 }
 
 

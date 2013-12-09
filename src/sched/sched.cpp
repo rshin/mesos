@@ -34,18 +34,21 @@
 
 #include <process/defer.hpp>
 #include <process/delay.hpp>
+#include <process/future.hpp>
+#include <process/id.hpp>
 #include <process/dispatch.hpp>
 #include <process/id.hpp>
+#include <process/owned.hpp>
 #include <process/process.hpp>
 #include <process/protobuf.hpp>
 
+#include <stout/check.hpp>
 #include <stout/duration.hpp>
 #include <stout/error.hpp>
 #include <stout/flags.hpp>
 #include <stout/hashmap.hpp>
 #include <stout/lambda.hpp>
 #include <stout/option.hpp>
-#include <stout/owned.hpp>
 #include <stout/os.hpp>
 #include <stout/stopwatch.hpp>
 #include <stout/uuid.hpp>
@@ -55,9 +58,11 @@
 #include "common/lock.hpp"
 #include "common/type_utils.hpp"
 
-#include "detector/detector.hpp"
+#include "master/detector.hpp"
 
 #include "local/local.hpp"
+
+#include "master/detector.hpp"
 
 #include "logging/flags.hpp"
 #include "logging/logging.hpp"
@@ -66,6 +71,7 @@
 
 using namespace mesos;
 using namespace mesos::internal;
+using namespace mesos::internal::master;
 
 using namespace process;
 
@@ -92,51 +98,37 @@ public:
                    Scheduler* _scheduler,
                    const FrameworkInfo& _framework,
                    const Option<Credential>& _credential,
-                   const string& _url,
+                   MasterDetector* _detector,
                    pthread_mutex_t* _mutex,
                    pthread_cond_t* _cond)
     : ProcessBase(ID::generate("scheduler")),
       driver(_driver),
       scheduler(_scheduler),
       framework(_framework),
-      url(_url),
       mutex(_mutex),
       cond(_cond),
       failover(_framework.has_id() && !framework.id().value().empty()),
-      master(UPID()),
+      master(None()),
       connected(false),
       aborted(false),
-      // TODO(benh): Add Try().
-      detector(Error("uninitialized")),
+      detector(_detector),
       credential(_credential),
+      authenticatee(NULL),
       authenticating(None()),
       authenticated(false),
       reauthenticate(false)
   {}
 
-  virtual ~SchedulerProcess() {}
+  virtual ~SchedulerProcess()
+  {
+    delete authenticatee;
+  }
 
 protected:
   virtual void initialize()
   {
-    // The master detector needs to be created after this process is
-    // running so that the "master detected" message is not dropped.
     // TODO(benh): Get access to flags so that we can decide whether
     // or not to make ZooKeeper verbose.
-    detector = MasterDetector::create(url, self(), false);
-    if (detector.isError()) {
-      driver->abort();
-      scheduler->error(driver, detector.error());
-      return;
-    }
-
-    install<NewMasterDetectedMessage>(
-        &SchedulerProcess::newMasterDetected,
-        &NewMasterDetectedMessage::pid);
-
-    install<NoMasterDetectedMessage>(
-        &SchedulerProcess::noMasterDetected);
-
     install<FrameworkRegisteredMessage>(
         &SchedulerProcess::registered,
         &FrameworkRegisteredMessage::framework_id,
@@ -175,31 +167,30 @@ protected:
     install<FrameworkErrorMessage>(
         &SchedulerProcess::error,
         &FrameworkErrorMessage::message);
+
+    // Start detecting masters.
+    detector->detect(master)
+      .onAny(defer(self(), &SchedulerProcess::detected, lambda::_1));
   }
 
-  virtual void finalize()
-  {
-    if (detector.isSome()) {
-      MasterDetector::destroy(detector.get());
-    }
-  }
-
-  void newMasterDetected(const UPID& pid)
+  void detected(const Future<Result<UPID> >& pid)
   {
     if (aborted) {
-      VLOG(1) << "Ignoring new master detected message because "
-              << "the driver is aborted!";
+      VLOG(1) << "Ignoring the master change because the driver is aborted!";
       return;
     }
 
-    VLOG(1) << "New master at " << pid;
+    // Not expecting MasterDetector to discard or fail the future.
+    CHECK(pid.isReady());
+    master = pid.get();
 
-    master = pid;
-    link(master);
-
-    // If master failed over, inform the scheduler about the
-    // disconnection.
     if (connected) {
+      // There are three cases here:
+      //   1. The master failed.
+      //   2. The master failed over to a new master.
+      //   3. The master failed over to the same master.
+      // In any case, we will reconnect (possibly immediately), so we
+      // must notify schedulers of the disconnection.
       Stopwatch stopwatch;
       if (FLAGS_v >= 1) {
         stopwatch.start();
@@ -212,46 +203,34 @@ protected:
 
     connected = false;
 
-    if (credential.isSome()) {
-      // Authenticate with the master.
-      authenticate();
+    if (master.isSome()) {
+      VLOG(1) << "New master detected at " << master.get();
+      link(master.get());
+
+      if (credential.isSome()) {
+        // Authenticate with the master.
+        authenticate();
+      } else {
+        // Proceed with registration without authentication.
+        LOG(INFO) << "No credentials provided."
+                  << " Attempting to register without authentication";
+
+        doReliableRegistration();
+      }
+    } else if (master.isNone()) {
+      // In this case, we don't actually invoke Scheduler::error
+      // since we might get reconnected to a master imminently.
+      VLOG(1) << "No master detected";
     } else {
-      // Proceed with registration without authentication.
-      LOG(INFO) << "No credentials provided."
-                << " Attempting to register without authentication";
-
-      doReliableRegistration();
+      LOG(ERROR) << "Failed to detect master: " << master.error();
     }
+
+    // Keep detecting masters.
+    LOG(INFO) << "Detecting new master";
+    detector->detect(master)
+      .onAny(defer(self(), &SchedulerProcess::detected, lambda::_1));
   }
 
-  void noMasterDetected()
-  {
-    if (aborted) {
-      VLOG(1) << "Ignoring no master detected message because "
-              << "the driver is aborted!";
-      return;
-    }
-
-    VLOG(1) << "No master detected, waiting for another master";
-
-    // Inform the scheduler about the disconnection if the driver
-    // was previously registered with the master.
-    if (connected) {
-      Stopwatch stopwatch;
-      if (FLAGS_v >= 1) {
-        stopwatch.start();
-      }
-
-      scheduler->disconnected(driver);
-
-      VLOG(1) << "Scheduler::disconnected took " << stopwatch.elapsed();
-    }
-
-    // In this case, we don't actually invoke Scheduler::error
-    // since we might get reconnected to a master imminently.
-    connected = false;
-    master = UPID();
-  }
 
   void authenticate()
   {
@@ -262,7 +241,7 @@ protected:
 
     authenticated = false;
 
-    if (!master) {
+    if (!master.isSome()) {
       return;
     }
 
@@ -278,14 +257,28 @@ protected:
       return;
     }
 
-    LOG(INFO) << "Authenticating with master " << master;
+    LOG(INFO) << "Authenticating with master " << master.get();
 
     CHECK_SOME(credential);
-    Owned<sasl::Authenticatee> authenticatee =
-      new sasl::Authenticatee(credential.get(), self());
 
-    authenticating = authenticatee->authenticate(master)
-      .onAny(defer(self(), &Self::_authenticate, authenticatee));
+    CHECK(authenticatee == NULL);
+    authenticatee = new sasl::Authenticatee(credential.get(), self());
+
+    // NOTE: We do not pass 'Owned<Authenticatee>' here because doing
+    // so could make 'AuthenticateeProcess' responsible for deleting
+    // 'Authenticatee' causing a deadlock because the destructor of
+    // 'Authenticatee' waits on 'AuthenticateeProcess'.
+    // This will happen in the following scenario:
+    // --> 'AuthenticateeProcess' does a 'Future.set()'.
+    // --> '_authenticate()' is dispatched to this process.
+    // --> This process executes '_authenticatee()'.
+    // --> 'AuthenticateeProcess' removes the onAny callback
+    //     from its queue which holds the last reference to
+    //     'Authenticatee'.
+    // --> '~Authenticatee()' is invoked by 'AuthenticateeProcess'.
+    // TODO(vinod): Consider using 'Shared' to 'Owned' upgrade.
+    authenticating = authenticatee->authenticate(master.get())
+      .onAny(defer(self(), &Self::_authenticate));
 
     delay(Seconds(5),
           self(),
@@ -293,19 +286,34 @@ protected:
           authenticating.get());
   }
 
-  void _authenticate(const Owned<sasl::Authenticatee>& authenticatee)
+  void _authenticate()
   {
     if (aborted) {
       VLOG(1) << "Ignoring _authenticate because the driver is aborted!";
       return;
     }
 
+    delete CHECK_NOTNULL(authenticatee);
+    authenticatee = NULL;
+
     CHECK_SOME(authenticating);
     const Future<bool>& future = authenticating.get();
 
+    if (!master.isSome()) {
+      LOG(INFO) << "Ignoring _authenticate because the master is lost";
+      authenticating = None();
+      // Set it to false because we do not want further retries until
+      // a new master is detected.
+      // We obviously do not need to reauthenticate either even if
+      // 'reauthenticate' is currently true because the master is
+      // lost.
+      reauthenticate = false;
+      return;
+    }
+
     if (reauthenticate || !future.isReady()) {
       LOG(WARNING)
-        << "Failed to authenticate with master " << master << ": "
+        << "Failed to authenticate with master " << master.get() << ": "
         << (reauthenticate ? "master changed" :
            (future.isFailed() ? future.failure() : "future discarded"));
 
@@ -318,12 +326,12 @@ protected:
     }
 
     if (!future.get()) {
-      LOG(ERROR) << "Master " << master << " refused authentication";
+      LOG(ERROR) << "Master " << master.get() << " refused authentication";
       error("Master refused authentication");
       return;
     }
 
-    LOG(INFO) << "Successfully authenticated with master " << master;
+    LOG(INFO) << "Successfully authenticated with master " << master.get();
 
     authenticated = true;
     authenticating = None();
@@ -348,7 +356,10 @@ protected:
     }
   }
 
-  void registered(const FrameworkID& frameworkId, const MasterInfo& masterInfo)
+  void registered(
+      const UPID& from,
+      const FrameworkID& frameworkId,
+      const MasterInfo& masterInfo)
   {
     if (aborted) {
       VLOG(1) << "Ignoring framework registered message because "
@@ -359,6 +370,13 @@ protected:
     if (connected) {
       VLOG(1) << "Ignoring framework registered message because "
               << "the driver is already connected!";
+      return;
+    }
+
+    if (!master.isSome() || from != master.get()) {
+      VLOG(1) << "Ignoring framework registered message because it was sent "
+              << "from '" << from << "' instead of the leading master '"
+              << (master.isSome() ? master.get() : UPID()) << "'";
       return;
     }
 
@@ -379,7 +397,10 @@ protected:
     VLOG(1) << "Scheduler::registered took " << stopwatch.elapsed();
   }
 
-  void reregistered(const FrameworkID& frameworkId, const MasterInfo& masterInfo)
+  void reregistered(
+      const UPID& from,
+      const FrameworkID& frameworkId,
+      const MasterInfo& masterInfo)
   {
     if (aborted) {
       VLOG(1) << "Ignoring framework re-registered message because "
@@ -390,6 +411,13 @@ protected:
     if (connected) {
       VLOG(1) << "Ignoring framework re-registered message because "
               << "the driver is already connected!";
+      return;
+    }
+
+    if (!master.isSome() || from != master.get()) {
+      VLOG(1) << "Ignoring framework re-registered message because it was sent "
+              << "from '" << from << "' instead of the leading master '"
+              << (master.isSome() ? master.get() : UPID()) << "'";
       return;
     }
 
@@ -412,7 +440,7 @@ protected:
 
   void doReliableRegistration()
   {
-    if (connected || !master) {
+    if (connected || !master.isSome()) {
       return;
     }
 
@@ -424,24 +452,41 @@ protected:
       // Touched for the very first time.
       RegisterFrameworkMessage message;
       message.mutable_framework()->MergeFrom(framework);
-      send(master, message);
+      send(master.get(), message);
     } else {
       // Not the first time, or failing over.
       ReregisterFrameworkMessage message;
       message.mutable_framework()->MergeFrom(framework);
       message.set_failover(failover);
-      send(master, message);
+      send(master.get(), message);
     }
 
     delay(Seconds(1), self(), &Self::doReliableRegistration);
   }
 
-  void resourceOffers(const vector<Offer>& offers,
-                      const vector<string>& pids)
+  void resourceOffers(
+      const UPID& from,
+      const vector<Offer>& offers,
+      const vector<string>& pids)
   {
     if (aborted) {
       VLOG(1) << "Ignoring resource offers message because "
               << "the driver is aborted!";
+      return;
+    }
+
+    if (!connected) {
+      VLOG(1) << "Ignoring resource offers message because the driver is "
+              << "disconnected!";
+      return;
+    }
+
+    CHECK_SOME(master);
+
+    if (from != master.get()) {
+      VLOG(1) << "Ignoring resource offers message because it was sent "
+              << "from '" << from << "' instead of the leading master '"
+              << master.get() << "'";
       return;
     }
 
@@ -472,11 +517,26 @@ protected:
     VLOG(1) << "Scheduler::resourceOffers took " << stopwatch.elapsed();
   }
 
-  void rescindOffer(const OfferID& offerId)
+  void rescindOffer(const UPID& from, const OfferID& offerId)
   {
     if (aborted) {
       VLOG(1) << "Ignoring rescind offer message because "
               << "the driver is aborted!";
+      return;
+    }
+
+    if (!connected) {
+      VLOG(1) << "Ignoring rescind offer message because the driver is "
+              << "disconnected!";
+      return;
+    }
+
+    CHECK_SOME(master);
+
+    if (from != master.get()) {
+      VLOG(1) << "Ignoring rescind offer message because it was sent "
+              << "from '" << from << "' instead of the leading master '"
+              << master.get() << "'";
       return;
     }
 
@@ -494,7 +554,10 @@ protected:
     VLOG(1) << "Scheduler::offerRescinded took " << stopwatch.elapsed();
   }
 
-  void statusUpdate(const StatusUpdate& update, const UPID& pid)
+  void statusUpdate(
+      const UPID& from,
+      const StatusUpdate& update,
+      const UPID& pid)
   {
     const TaskStatus& status = update.status();
 
@@ -502,6 +565,24 @@ protected:
       VLOG(1) << "Ignoring task status update message because "
               << "the driver is aborted!";
       return;
+    }
+
+    // Allow status updates created from the driver itself.
+    if (from != UPID()) {
+      if (!connected) {
+        VLOG(1) << "Ignoring status update message because the driver is "
+                << "disconnected!";
+        return;
+      }
+
+      CHECK_SOME(master);
+
+      if (from != master.get()) {
+        VLOG(1) << "Ignoring status update message because it was sent "
+                << "from '" << from << "' instead of the leading master '"
+                << master.get() << "'";
+        return;
+      }
     }
 
     VLOG(2) << "Received status update " << update << " from " << pid;
@@ -531,7 +612,7 @@ protected:
     // we want to avoid sending the ACK if the driver was aborted when we
     // made the statusUpdate call. This works because, the 'abort' message will
     // be enqueued before the ACK message is processed.
-    if (pid > 0) {
+    if (pid != UPID()) {
       dispatch(self(), &Self::statusUpdateAcknowledgement, update, pid);
     }
   }
@@ -561,10 +642,18 @@ protected:
       return;
     }
 
-    if (from != master) {
-      LOG(WARNING) << "Ignoring lost slave message from " << from
-                   << " because it is not from the registered master ("
-                   << master << ")";
+    if (!connected) {
+      VLOG(1) << "Ignoring lost slave message because the driver is "
+              << "disconnected!";
+      return;
+    }
+
+    CHECK_SOME(master);
+
+    if (from != master.get()) {
+      VLOG(1) << "Ignoring lost slave message because it was sent "
+              << "from '" << from << "' instead of the leading master '"
+              << master.get() << "'";
       return;
     }
 
@@ -636,7 +725,8 @@ protected:
     if (connected && !failover) {
       UnregisterFrameworkMessage message;
       message.mutable_framework_id()->MergeFrom(framework.id());
-      send(master, message);
+      CHECK_SOME(master);
+      send(master.get(), message);
     }
 
     Lock lock(mutex);
@@ -653,16 +743,16 @@ protected:
   {
     VLOG(1) << "Aborting framework '" << framework.id() << "'";
 
-    aborted = true;
+    CHECK(aborted);
 
     if (!connected) {
       VLOG(1) << "Not sending a deactivate message as master is disconnected";
-      return;
+    } else {
+      DeactivateFrameworkMessage message;
+      message.mutable_framework_id()->MergeFrom(framework.id());
+      CHECK_SOME(master);
+      send(master.get(), message);
     }
-
-    DeactivateFrameworkMessage message;
-    message.mutable_framework_id()->MergeFrom(framework.id());
-    send(master, message);
 
     Lock lock(mutex);
     pthread_cond_signal(cond);
@@ -678,7 +768,8 @@ protected:
     KillTaskMessage message;
     message.mutable_framework_id()->MergeFrom(framework.id());
     message.mutable_task_id()->MergeFrom(taskId);
-    send(master, message);
+    CHECK_SOME(master);
+    send(master.get(), message);
   }
 
   void requestResources(const vector<Request>& requests)
@@ -693,7 +784,8 @@ protected:
     foreach (const Request& request, requests) {
       message.add_requests()->MergeFrom(request);
     }
-    send(master, message);
+    CHECK_SOME(master);
+    send(master.get(), message);
   }
 
   void launchTasks(const OfferID& offerId,
@@ -720,7 +812,7 @@ protected:
         update.set_timestamp(Clock::now().secs());
         update.set_uuid(UUID::random().toBytes());
 
-        statusUpdate(update, UPID());
+        statusUpdate(UPID(), update, UPID());
       }
       return;
     }
@@ -741,7 +833,7 @@ protected:
         update.set_timestamp(Clock::now().secs());
         update.set_uuid(UUID::random().toBytes());
 
-        statusUpdate(update, UPID());
+        statusUpdate(UPID(), update, UPID());
         continue;
       }
 
@@ -761,7 +853,7 @@ protected:
         update.set_timestamp(Clock::now().secs());
         update.set_uuid(UUID::random().toBytes());
 
-        statusUpdate(update, UPID());
+        statusUpdate(UPID(), update, UPID());
         continue;
       }
 
@@ -801,7 +893,8 @@ protected:
     // Remove the offer since we saved all the PIDs we might use.
     savedOffers.erase(offerId);
 
-    send(master, message);
+    CHECK_SOME(master);
+    send(master.get(), message);
   }
 
   void reviveOffers()
@@ -813,7 +906,8 @@ protected:
 
     ReviveOffersMessage message;
     message.mutable_framework_id()->MergeFrom(framework.id());
-    send(master, message);
+    CHECK_SOME(master);
+    send(master.get(), message);
   }
 
   void sendFrameworkMessage(const ExecutorID& executorId,
@@ -853,7 +947,8 @@ protected:
       message.mutable_framework_id()->MergeFrom(framework.id());
       message.mutable_executor_id()->MergeFrom(executorId);
       message.set_data(data);
-      send(master, message);
+      CHECK_SOME(master);
+      send(master.get(), message);
     }
   }
 
@@ -871,7 +966,8 @@ protected:
       message.add_statuses()->MergeFrom(status);
     }
 
-    send(master, message);
+    CHECK_SOME(master);
+    send(master.get(), message);
   }
 
 private:
@@ -880,21 +976,22 @@ private:
   MesosSchedulerDriver* driver;
   Scheduler* scheduler;
   FrameworkInfo framework;
-  string url; // URL for the master (e.g., zk://, file://, etc).
   pthread_mutex_t* mutex;
   pthread_cond_t* cond;
   bool failover;
-  UPID master;
+  Result<UPID> master;
 
-  volatile bool connected; // Flag to indicate if framework is registered.
+  bool connected; // Flag to indicate if framework is registered.
   volatile bool aborted; // Flag to indicate if the driver is aborted.
 
-  Try<MasterDetector*> detector;
+  MasterDetector* detector;
 
   hashmap<OfferID, hashmap<SlaveID, UPID> > savedOffers;
   hashmap<SlaveID, UPID> savedSlavePids;
 
   const Option<Credential> credential;
+
+  sasl::Authenticatee* authenticatee;
 
   // Indicates if an authentication attempt is in progress.
   Option<Future<bool> > authenticating;
@@ -932,7 +1029,9 @@ MesosSchedulerDriver::MesosSchedulerDriver(
     framework(_framework),
     master(_master),
     process(NULL),
-    status(DRIVER_NOT_STARTED)
+    status(DRIVER_NOT_STARTED),
+    credential(NULL),
+    detector(NULL)
 {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
@@ -984,13 +1083,7 @@ MesosSchedulerDriver::MesosSchedulerDriver(
 
   CHECK(process == NULL);
 
-  if (pid.isSome()) {
-    process = new SchedulerProcess(
-        this, scheduler, framework, None(), pid.get(), &mutex, &cond);
-  } else {
-    process = new SchedulerProcess(
-        this, scheduler, framework, None(), master, &mutex, &cond);
-  }
+  url = pid.isSome() ? static_cast<string>(pid.get()) : master;
 }
 
 
@@ -1000,12 +1093,14 @@ MesosSchedulerDriver::MesosSchedulerDriver(
     Scheduler* _scheduler,
     const FrameworkInfo& _framework,
     const string& _master,
-    const Credential& credential)
+    const Credential& _credential)
   : scheduler(_scheduler),
     framework(_framework),
     master(_master),
     process(NULL),
-    status(DRIVER_NOT_STARTED)
+    status(DRIVER_NOT_STARTED),
+    credential(new Credential(_credential)),
+    detector(NULL)
 {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
@@ -1057,13 +1152,7 @@ MesosSchedulerDriver::MesosSchedulerDriver(
 
   CHECK(process == NULL);
 
-  if (pid.isSome()) {
-    process = new SchedulerProcess(
-        this, scheduler, framework, credential, pid.get(), &mutex, &cond);
-  } else {
-    process = new SchedulerProcess(
-        this, scheduler, framework, credential, master, &mutex, &cond);
-  }
+  url = pid.isSome() ? static_cast<string>(pid.get()) : master;
 }
 
 
@@ -1093,6 +1182,10 @@ MesosSchedulerDriver::~MesosSchedulerDriver()
   pthread_mutex_destroy(&mutex);
   pthread_cond_destroy(&cond);
 
+  if (detector != NULL) {
+    delete detector;
+  }
+
   // Check and see if we need to shutdown a local cluster.
   if (master == "local" || master == "localquiet") {
     local::shutdown();
@@ -1108,7 +1201,31 @@ Status MesosSchedulerDriver::start()
     return status;
   }
 
-  CHECK(process != NULL);
+  if (detector == NULL) {
+    Try<MasterDetector*> detector_ = MasterDetector::create(url);
+
+    if (detector_.isError()) {
+      status = DRIVER_ABORTED;
+      string message = "Failed to create a master detector for '" +
+      master + "': " + detector_.error();
+      scheduler->error(this, message);
+      return status;
+    }
+
+    // Save the detector so we can delete it later.
+    detector = detector_.get();
+  }
+
+  CHECK(process == NULL);
+
+  if (credential == NULL) {
+    process = new SchedulerProcess(
+        this, scheduler, framework, None(), detector, &mutex, &cond);
+  } else {
+    const Credential& cred = *credential;
+    process = new SchedulerProcess(
+        this, scheduler, framework, cred, detector, &mutex, &cond);
+  }
 
   spawn(process);
 
@@ -1151,6 +1268,16 @@ Status MesosSchedulerDriver::abort()
 
   CHECK(process != NULL);
 
+  // We set the volatile aborted to true here to prevent any further
+  // messages from being processed in the SchedulerProcess. However,
+  // if abort() is called from another thread as the SchedulerProcess,
+  // there may be at most one additional message processed.
+  // TODO(bmahler): Use an atomic boolean.
+  process->aborted = true;
+
+  // Dispatching here ensures that we still process the outstanding
+  // requests *from* the scheduler, since those do proceed when
+  // aborted is true.
   dispatch(process, &SchedulerProcess::abort);
 
   return status = DRIVER_ABORTED;

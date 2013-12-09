@@ -18,7 +18,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.61])
-AC_INIT([mesos], [0.15.0])
+AC_INIT([mesos], [0.17.0])
 
 # Have autoconf setup some variables related to the system.
 AC_CANONICAL_HOST
@@ -195,7 +195,7 @@ AC_PROG_CXX([g++])
 AC_PROG_CC([gcc])
 
 # Check the version of gcc and add any flags as appropriate.
-GCC_VERSION="`gcc -dumpversion`"
+GCC_VERSION="`${CC} -dumpversion`"
 test $? = 0 || AC_MSG_ERROR([failed to determine version of gcc])
 case  "${GCC_VERSION}" in
   4.4*)
@@ -519,5 +519,6 @@ We need libsasl2 for authentication!
 -------------------------------------------------------------------
 ])])
 
+AM_CONDITIONAL([GIT_REPO], [test -d ${srcdir}"/.git"])
 
 AC_OUTPUT

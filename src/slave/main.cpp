@@ -27,7 +27,7 @@
 
 #include "common/build.hpp"
 
-#include "detector/detector.hpp"
+#include "master/detector.hpp"
 
 #include "logging/logging.hpp"
 
@@ -92,17 +92,16 @@ int main(int argc, char** argv)
   if (load.isError()) {
     cerr << load.error() << endl;
     usage(argv[0], flags);
-    exit(1);
+    EXIT(1);
   }
 
   if (help) {
     usage(argv[0], flags);
-    exit(1);
+    EXIT(1);
   }
 
   if (master.isNone()) {
-    cerr << "Missing required option --master" << endl;
-    exit(1);
+    EXIT(1) << "Missing required option --master";
   }
 
   // Initialize libprocess.
@@ -112,34 +111,34 @@ int main(int argc, char** argv)
 
   os::setenv("LIBPROCESS_PORT", stringify(port));
 
-  process::initialize();
+  process::initialize("slave(1)");
 
   logging::initialize(argv[0], flags, true); // Catch signals.
+
+  LOG(INFO) << "Build: " << build::DATE << " by " << build::USER;
 
   LOG(INFO) << "Creating \"" << isolation << "\" isolator";
 
   Isolator* isolator = Isolator::create(isolation);
   if (isolator == NULL) {
-    cerr << "Unrecognized isolation type: " << isolation << endl;
-    exit(1);
+    EXIT(1) << "Unrecognized isolation type: " << isolation;
   }
 
-  LOG(INFO) << "Build: " << build::DATE << " by " << build::USER;
+  Try<MasterDetector*> detector = MasterDetector::create(master.get());
+  if (detector.isError()) {
+    EXIT(1) << "Failed to create a master detector: " << detector.error();
+  }
+
   LOG(INFO) << "Starting Mesos slave";
 
   Files files;
-  Slave* slave = new Slave(flags, false, isolator, &files);
+  Slave* slave = new Slave(flags, false,  detector.get(), isolator, &files);
   process::spawn(slave);
-
-  Try<MasterDetector*> detector =
-    MasterDetector::create(master.get(), slave->self(), false, flags.quiet);
-
-  CHECK_SOME(detector) << "Failed to create a master detector";
 
   process::wait(slave->self());
   delete slave;
 
-  MasterDetector::destroy(detector.get());
+  delete detector.get();
   Isolator::destroy(isolator);
 
   return 0;

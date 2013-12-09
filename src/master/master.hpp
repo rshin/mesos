@@ -30,6 +30,7 @@
 #include <mesos/resources.hpp>
 
 #include <process/http.hpp>
+#include <process/owned.hpp>
 #include <process/process.hpp>
 #include <process/protobuf.hpp>
 
@@ -38,15 +39,16 @@
 #include <stout/hashset.hpp>
 #include <stout/multihashmap.hpp>
 #include <stout/option.hpp>
-#include <stout/owned.hpp>
 
 #include "common/type_utils.hpp"
-#include "common/units.hpp"
 
 #include "files/files.hpp"
 
 #include "master/constants.hpp"
+#include "master/contender.hpp"
+#include "master/detector.hpp"
 #include "master/flags.hpp"
+#include "master/registrar.hpp"
 
 #include "messages/messages.hpp"
 
@@ -82,19 +84,17 @@ struct Role;
 class Master : public ProtobufProcess<Master>
 {
 public:
-  Master(allocator::Allocator* allocator, Files* files);
   Master(allocator::Allocator* allocator,
+         Registrar* registrar,
          Files* files,
-         const Flags& flags);
+         MasterContender* contender,
+         MasterDetector* detector,
+         const Flags& flags = Flags());
 
   virtual ~Master();
 
   void submitScheduler(
       const std::string& name);
-  void newMasterDetected(
-      const UPID& pid);
-  void noMasterDetected();
-  void masterDetectionFailure();
   void registerFramework(
       const process::UPID& from,
       const FrameworkInfo& frameworkInfo);
@@ -109,19 +109,24 @@ public:
       const process::UPID& from,
       const FrameworkID& frameworkId);
   void resourceRequest(
+      const process::UPID& from,
       const FrameworkID& frameworkId,
       const std::vector<Request>& requests);
   void launchTasks(
+      const process::UPID& from,
       const FrameworkID& frameworkId,
       const OfferID& offerId,
       const std::vector<TaskInfo>& tasks,
       const Filters& filters);
   void reviveOffers(
+      const process::UPID& from,
       const FrameworkID& frameworkId);
   void killTask(
+      const process::UPID& from,
       const FrameworkID& frameworkId,
       const TaskID& taskId);
   void schedulerMessage(
+      const process::UPID& from,
       const SlaveID& slaveId,
       const FrameworkID& frameworkId,
       const ExecutorID& executorId,
@@ -189,6 +194,15 @@ protected:
 
   // Return connected frameworks that are not in the process of being removed
   std::vector<Framework*> getActiveFrameworks() const;
+
+  // Invoked when the contender has entered the contest.
+  void contended(const Future<Future<Nothing> >& contended);
+
+  // Invoked when the contender has lost the candidacy.
+  void lostCandidacy(const Future<Nothing>& lost);
+
+  // Invoked when there is a newly elected leading master.
+  void detected(const Future<Result<UPID> >& pid);
 
   // Process a launch tasks request (for a non-cancelled offer) by
   // launching the desired tasks (if the offer contains a valid set of
@@ -281,8 +295,13 @@ private:
     process::Future<process::http::Response> roles(
         const process::http::Request& request);
 
+    // /master/tasks.json
+    process::Future<process::http::Response> tasks(
+        const process::http::Request& request);
+
     const static std::string HEALTH_HELP;
     const static std::string REDIRECT_HELP;
+    const static std::string TASKS_HELP;
 
   private:
     const Master& master;
@@ -296,13 +315,18 @@ private:
 
   const Flags flags;
 
-  UPID leader; // Current leading master.
+  Result<UPID> leader; // Current leading master.
 
-  bool elected;
+  // Whether we are the current leading master.
+  bool elected() const { return leader.isSome() && leader.get() == self(); }
 
   allocator::Allocator* allocator;
   WhitelistWatcher* whitelistWatcher;
+  Registrar* registrar;
   Files* files;
+
+  MasterContender* contender;
+  MasterDetector* detector;
 
   MasterInfo info;
 
